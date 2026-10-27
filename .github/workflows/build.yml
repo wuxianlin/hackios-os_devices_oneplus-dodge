@@ -1,0 +1,144 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  HACKIOS_REPO: https://github.com/oosexgang/hackios-xnu-kernel
+  # the hackios-os tree this port was last rebased on (see patches/)
+  HACKIOS_REF: 8851317
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: apt packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl xz-utils make flex bison m4 perl \
+            python3 python3-pip python3-venv autoconf automake libtool \
+            pkg-config clang lld llvm nasm zip uuid-dev
+
+      - name: theos (the cctools ld64 and the iPhoneOS 16.5 SDK)
+        run: |
+          git clone -q https://github.com/theos/theos.git "$HOME/theos"
+          mkdir -p "$HOME/theos/toolchain/linux/iphone"
+          curl -fsSL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz \
+            | tar -xJ -C "$HOME/theos/toolchain/linux/iphone" --strip-components=2
+          "$HOME/theos/toolchain/linux/iphone/bin/ld" -v | head -1
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          git -C /tmp/sdks sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$HOME/theos/sdks" && mv /tmp/sdks/iPhoneOS16.5.sdk "$HOME/theos/sdks/"
+
+      - name: hackios-os (upstream clone) + this port
+        run: |
+          git clone -q "$HACKIOS_REPO" hackios-os
+          git -C hackios-os checkout -q "$HACKIOS_REF"
+          cp -r devices/oneplus-dodge hackios-os/devices/
+          git -C hackios-os apply --whitespace=nowarn ../patches/hakios-os.patch
+          cp -a devices/oneplus-dodge/kernel/. hackios-os/xnu/files/bsd/dev/   # the touch driver
+
+      - name: kernel (Apple XNU + the port)
+        run: |
+          cd hackios-os
+          ./xnu/apply.sh
+          ./xnu-deps/setup.sh || { echo '--- setup failed, xnu-deps/exporthdrs.log:'; tail -60 xnu-deps/exporthdrs.log 2>/dev/null; exit 1; }
+          ./xnu-build.sh -j"$(nproc)" -k > kernel-build.log 2>&1 || true    # -k: post-link errors are expected
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          test -f "$K" && cp "$K" ../kernel.bin || { echo '--- compile errors:'; grep -nE "error:|fatal error" kernel-build.log | head -20; echo '--- tail:'; tail -20 kernel-build.log; exit 1; }
+
+      - name: loader
+        run: |
+          python3 -m pip install --user --break-system-packages lzfse 2>/dev/null || python3 -m pip install --user lzfse
+          cd hackios-os && ./xnuloader/build.sh && cp xnuloader/loader.efi ../loader.efi
+
+      - name: restore the UEFI tree (cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            Mu-Silicium
+            hackios-os/venv
+          key: uefi-dodge-${{ hashFiles('devices/oneplus-dodge/uefi/**') }}
+          restore-keys: uefi-dodge-
+
+      - name: UEFI (Mu-Silicium + the port)
+        run: |
+          cd hackios-os && devices/oneplus-dodge/uefi/apply.sh   # clones Mu-Silicium/ next to it (shallow)
+          python3 -m venv venv
+          venv/bin/pip -q install -r Mu-Silicium/pip-requirements.txt
+          D=Mu-Silicium/Mu_Basecore/BaseTools/Bin/mu_nasm_extdep     # mu_nasm without Mono
+          mkdir -p "$D/Linux-x86-64" && echo 'version: 20016.1.1' > "$D/extdep_state.yaml"
+          ln -s /usr/bin/nasm /usr/bin/ndisasm "$D/Linux-x86-64/"
+          ( cd Mu-Silicium && ../venv/bin/python3 build_uefi.py -d dodge -r RELEASE )
+          ls -la Mu-Silicium/Build/dodgePkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
+
+      - name: boot image
+        run: |
+          python3 hackios-os/xnuloader/mkpayload.py -o usb-payload.bin loader.efi=loader.efi --usb
+          # the paths are inside hackios-os (where uefi/apply.sh put Mu-Silicium); a wrong
+          # UEFI_FD would silently fall back to the POCO prebuilt and not boot on this phone
+          UEFI_FD=hackios-os/Mu-Silicium/Build/dodgePkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd \
+            DTB=hackios-os/Mu-Silicium/Resources/DTBs/dodge.dtb \
+            FD_BASE=0xA7100000 FD_SIZE=0x300000 PAYLOAD_BASE=0xF0000000 BOOT_HEADER=4 \
+            python3 hackios-os/mkxnuimg.py -p usb-payload.bin -o boot.img
+          ls -la boot.img
+
+      # The system image out of Apple's IPSW: for one's own use only, never in a
+      # release -- it is Apple's software. Artifacts take single files up to 10 GB,
+      # so the image goes whole; check it with SHA256SUMS after downloading. Built
+      # after everything else so a failure here costs nothing else.
+      - name: free disk for the system image
+        run: |
+          df -h / /mnt || true
+          # the kernel is built and copied out; the UEFI FD survives inside the FV dir
+          rm -rf hackios-os/xnu-src/xnu-8796.121.2/BUILD
+          find Mu-Silicium/Build -mindepth 1 -maxdepth 3 -type d ! -path '*FV*' -exec rm -rf {} + 2>/dev/null || true
+          rm -rf hackios-os/xnu-src/xnu-8796.121.2/.git
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/.ghcup 2>/dev/null || true
+          df -h / /mnt || true
+
+      - name: "system image (private: from Apple's IPSW)"
+        run: |
+          # the IPSW download and its extraction are ~15 GB together: /mnt has the room
+          mkdir -p /mnt/ios165 && rmdir hackios-os/ios165 2>/dev/null || rm -rf hackios-os/ios165
+          ln -s /mnt/ios165 hackios-os/ios165
+          curl -fsSL https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz | tar -xJ -C /tmp
+          sudo ln -sf /tmp/7zz /usr/local/bin/7z && 7z | head -3
+          cd hackios-os
+          make fetch
+          make images
+          cd ..
+          mkdir -p sysimage
+          cp hackios-os/userland/system.apfs hackios-os/userland/root.apfs sysimage/
+          ( cd sysimage && sha256sum system.apfs root.apfs > SHA256SUMS )
+          ls -la sysimage/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-apfs
+          path: sysimage/
+
+      - name: package
+        run: |
+          cp hackios-os/userland/root.apfs root.apfs
+          ./package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hackios-dodge
+          path: dist/hackios-dodge-*.zip
+
+      - name: release (tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" dist/hackios-dodge-*.zip \
+            --title "${GITHUB_REF#refs/tags/}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

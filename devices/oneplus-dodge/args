@@ -1,0 +1,13 @@
+# The kernel arguments this device needs beyond the common ones: the launcher
+# (launcher/hackios.py) and tools/modem-cycle.sh merge this file into the
+# command line. pull-soc.sh regenerates soc.args, so the device's own arguments
+# live here instead.
+#
+#   synaptics=1        the touch screen (the S3910 driver)
+#   buttons_pin=0x18e  the volume keys' PMIC GPIO: slave 1 (PM8550), GPIO6 --
+#                      its registers 0x8e00 of that slave. The key needs the pin
+#                      to be an enabled pulled-up input already; this phone's
+#                      firmware leaves it as an output, so that one key is off
+#   buttons_swap=1     the PON's resin key is volume UP here and the GPIO one
+#                      volume DOWN (the POCO X5 Pro's wiring is the reverse)
+synaptics=1 buttons=1 buttons_pin=0x18e buttons_swap=1
