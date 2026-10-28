@@ -231,20 +231,48 @@ fastboot-boot 的 guest VM 被授予的外设集不含：GENI SE4 写、SPMI PMI
 
 实测：点按、拖动、边缘上滑手势全部可用，125Hz 报告率。
 
-## 音频（ADSP）调查（2026-10-27）
+## 音频（ADSP）进度（2026-10-29）
 
-SMP2P（items 443/429）、GLINK（IPCC client 3, signal 0/2）、remote-pid 2、QRTR——全部与
-redwood 相同（设备树逐项核对）。供电走 cmd_db 资源名 lcx.lvl/lmx.lvl（相同名字）。
-固件已从手机拉到 fw-audio/（39MB, adsp.mdt+b00..b36）。hakios.adsp.c 已参数化：
-adsp_mem/adsp_size/adsp_smem/adsp_smem_size 启动参数。
+详细记录：research/audio-adsp-progress.md（工作区）。要点：
 
-**阻塞点：共享内存（SMEM）**。
-- Android DT 的 SMEM（0x80900000）对这个 fastboot VM 完全不可读（第一步读就 data abort）。
-- UEFI 内存映射里的 SMEM 条目是 0x81D00000/0x200000；实际只可读前 512KB（+0x80000 起Abort）。
-- 512KB 内有全局分区（$PRT at +0x1000, hosts fffe/fffe, size 0x9d000——本身已越过可读窗），
-  但 APPS↔ADSP 分区在更远处，TOC（在 2MB 末尾）也读不到。
-- 这是 Gunyah 给这个 VM 的 stage-2 权限，与 Android VM 不同。要越过它需要 Gunyah
-  Resource Manager 协商（gh_rm_drv 在 Android 内核里，我们链里没有）。
+**已全部打通（每步单独验证）**：SMEM 逐页读写、固件解析（Linux 式可重定位布局）、
+AOP mailbox、DTB 子 PAS（0x24/0x25 完整周期含 auth_and_reset 成功）、主镜像
+INIT_IMAGE/MEM_SETUP/53 段加载读回零差异、SMP2P 项、lcx/lmx=384 供电、
+LP0/SH0/MC0 带宽 BCM 投票、xo.lvl=3 时钟、GIC 门铃线屏蔽、load_state on、
+再 INIT——即 Linux adsp_start 的每一步都已复刻。
+
+**唯一剩余阻塞**：PAS_AUTH_AND_RESET（PAS 1）整机冻结。决定性对照实验：**CDSP
+（PAS 18，另一颗 Q6、另一子系统）同样冻结**，而两个 DTB PAS（不释放核心）都成功
+→ 问题在 Q6 核心释放路径本身，非 ADSP 特有配置。
+
+**机理（有 Android 侧证据）**：SM8750 的 DSP 是 Gunyah 管理的受保护 VM。Android
+内核跑全套 gh_rm_drv/mem_buf/qrtr_gunyah 栈；我们的 fastboot 上下文没有向 Gunyah
+资源管理器注册，核心释放 SMC 进入的 TZ→Gunyah 路径因缺少 VM 状态在 EL2 死锁。
+
+**回归路径（有信心再动手）**：① Android 侧 kprove PAS SMC 流；② 主线
+drivers/virt/gunyah 的 RM 协议最小握手；③ 先搞自恢复（gh_virt_wdt 或 OPLUS
+pmicwd）；④ 才再碰 auth。
+
+关键启动参数（hakios.adsp.c，全部在 init 解析）：adsp_step=N 安全阶梯、
+adsp_noauth=1（只跳过 ask）、adsp_bw=1（BCM 投票）、adsp_fw=cdsp+adsp_pas=18+
+adsp_dtb_pas=0x25+区域参数（CDSP 对照）、adsp_cmddump=1（cmd_db 转储）。
+RPMh 细节：v7 寄存器布局（msgid 0x34/步进 24/control 0x24）；ARC 电压写 selector、
+ARC 时钟写原始值（xo.lvl=3，写 selector 会冻结）；BCM 命令
+VALID|COMMIT|(x<<14)|y（cmd_db slave[2] 大写名）。
+
+
+## 按键（2026-10-28，三键全工作）
+
+电源键与音量上键走 PON（KPDPWR + RESIN；本机 resin 是音量上，buttons_swap=1），
+天生配置好、只读即可。音量下键是 PM8550 sid1 GPIO6（buttons_pin=0x18d，寄存器
+0x8d00；0x18e 是 GPIO7，属主 EE4——写它内核直接中止）。固件把引脚留成禁用，
+驱动经仲裁器 chnls 通道（APID 610，cnfg 归属表属主 EE0，与触摸的通道同类）把
+DIG_EN_CTL(0x46)=0x80 写上即启用。修了三个叠着的 bug 才通：
+
+- 引脚号差一（0x8d00 才是 GPIO6：pinctrl 基址 0x8800 = GPIO1，+0x100/脚）
+- 写循环的 start 未初始化，状态查询瞬间退出误报"无应答"
+- v8 observer 每次只回 4 字节，8 字节读的后 4 字节是假 0——enable 位一直在
+  读假数据（写成功了也显示"still not right"）
 
 ## 按键（2026-10-28，三键全工作）
 
