@@ -69,10 +69,10 @@ index c20bbe4..92c8a11 100755
      os.unlink(kernel)
  print(f'{args.output}: {os.path.getsize(args.output)} bytes (shim {len(shim)}, uncompressed {len(blob)})')
 diff --git a/xnu/files/bsd/dev/hakios.buttons.c b/xnu/files/bsd/dev/hakios.buttons.c
-index 94dbbd5..8d27913 100644
+index 94dbbd5..f2c9d2c 100644
 --- a/xnu/files/bsd/dev/hakios.buttons.c
 +++ b/xnu/files/bsd/dev/hakios.buttons.c
-@@ -148,10 +148,14 @@ struct peripheral {
+@@ -148,10 +148,58 @@ struct peripheral {
  	uint16_t        id;             /* slave << 8 | peripheral: the high byte of its register addresses */
  	uint16_t        channel;
  	bool            found;
@@ -85,10 +85,54 @@ index 94dbbd5..8d27913 100644
 +static bool arb_v8;              /* version 8 of the arbiter (SM8750): its own core, table and observer */
 +static vm_offset_t arb_v8_core;  /* 0x0c400000: version at +0, channel count at +4, APID table at +0x2000 */
 +static vm_offset_t arb_v8_obs;   /* 0x0c440000: 0x20 per APID -- cmd +0x00, status +0x08, data +0x18 */
++static vm_offset_t arb_v8_chn;   /* 0x0c500000, 0x1000 per APID -- the write side, exactly
++                                  * as the touch driver maps it (one 4 MB mapping); only
++                                  * opcode 0 ("extended write long") gets through the
++                                  * hypervisor on this phone */
++
++/* One register write to a peripheral's page through the "chnls" region -- the
++ * touch driver's proven path (hakios.dodge_touch_hw.h s39_avspmi), with the
++ * same lock so the two drivers' writes cannot interleave. */
++static const char *
++spmi_write_v8(const struct peripheral *p, uint8_t reg, uint8_t val)
++{
++	vm_offset_t w;
++	uint64_t start, now, interval;
++	uint32_t status;
++
++	/* the observer channel (0x20 per APID) rather than the chnls page (0x1000 per
++	 * APID): reads through the observer work everywhere, and opcode 0 writes --
++	 * never tried here before -- might pass the hypervisor's filter the same way
++	 * they do on the chnls page for the touch driver's APID. The chnls page for
++	 * THIS peripheral's APID aborts the kernel (a per-APID stage-2 mapping). */
++	/* the chnls region (0x1000 per APID), as the touch driver maps it: the
++	 * write side.  Writes through the observer never reach the PMIC, and the
++	 * channel must be this system's own (owner EE 0 at the cnfg region's table;
++	 * another EE's channel -- the wrong pin's APID was one -- faults the
++	 * kernel) */
++	if (arb_v8_chn == 0) {
++		arb_v8_chn = ml_io_map(0x0c500000UL, 0x400000);
++		if (arb_v8_chn == 0) return "the write side is not mapped";
++	}
++	w = arb_v8_chn + 0x1000UL * p->channel;
++	nanoseconds_to_absolutetime(10000 * (uint64_t)NSEC_PER_USEC, &interval);   /* a write is slower than a read */
++	hakios_spmi_lock();
++	wr(w + 0x10, val);
++	wr(w + 0x00, (0u << 27) | ((uint32_t)reg << 4));      /* opcode 0 */
++	start = mach_absolute_time();
++	do {
++		status = rd(w + 0x08);
++		now = mach_absolute_time();
++	} while (!(status & STATUS_DONE) && now - start < interval);
++	hakios_spmi_unlock();
++	if (!(status & STATUS_DONE)) return "no answer from the arbiter";
++	if (status & (STATUS_FAILURE | STATUS_DENIED | STATUS_DROPPED)) return "the transfer did not go through";
++	return NULL;
++}
  /* How the reads have gone: said once a minute. */
  static struct {
  	uint64_t reads, failed, total_ns, longest_ns, last_ns;
-@@ -164,20 +168,27 @@ static struct {
+@@ -164,20 +212,27 @@ static struct {
  static const char *
  spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t count)
  {
@@ -121,7 +165,7 @@ index 94dbbd5..8d27913 100644
  	hakios_spmi_unlock();
  
  	if (!(status & STATUS_DONE)) {
-@@ -210,6 +221,64 @@ spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t coun
+@@ -210,6 +265,96 @@ spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t coun
   * Which channel is that peripheral's. Several can be: one per system that may write to it. As
   * Linux chooses: the first, unless a later one is ours to write through.
   */
@@ -167,6 +211,38 @@ index 94dbbd5..8d27913 100644
 +				}
 +				printf("buttons: %u non-zero entries in %u\n", nonzero, channels);
 +			}
++			/* every APID that reaches a sid-1 or sid-9 GPIO peripheral
++			 * (0x88 to 0x90): the key's GPIO may sit at more than one, and
++			 * only some of them may have the write side mapped */
++			for (uint32_t n = 0; n < channels; n++) {
++				uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
++				uint32_t ppid = (map >> 8) & 0xfff;
++
++				if ((ppid >> 8) == 1 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
++					printf("buttons: APID %u: sid-1 GPIO at %#x\n", n, ppid);
++				} else if ((ppid >> 8) == 9 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
++					printf("buttons: APID %u: sid-9 GPIO at %#x\n", n, ppid);
++				}
++			}
++			/* the ownership table (v7: the cnfg region, 4 bytes per APID, the
++			 * low 3 bits the owner): an APID whose owner is not this system's
++			 * EE rejects writes -- a channel of the power-on block's, of the
++			 * touch's (whose write path works), and of the key's candidates
++			 * say whose are whose */
++			{
++				vm_offset_t cnfg = ml_io_map(0xc42d000UL, 0x4000);
++				const uint32_t interesting[] = { 581, 662, 132, 608, 609, 610, 611, 684, 685, 686, 696, 728 };
++
++				if (cnfg != 0) {
++					for (unsigned i = 0; i < sizeof(interesting) / sizeof(interesting[0]); i++) {
++						uint32_t own = rd(cnfg + 4 * interesting[i]);
++
++						printf("buttons: APID %u: owner %#x (EE %u)\n", interesting[i], own, own & 7);
++					}
++					/* (the mapping stays: taking it apart could take the
++					 * arbiter's own with it, as the GIC's once did) */
++				}
++			}
 +		}
 +	}
 +	for (uint32_t n = 0; n < channels; n++) {
@@ -186,7 +262,15 @@ index 94dbbd5..8d27913 100644
  static void
  find_channel(struct peripheral *p, uint32_t channels)
  {
-@@ -333,20 +402,24 @@ buttons_poll(void)
+@@ -259,6 +404,7 @@ find_channel(struct peripheral *p, uint32_t channels)
+ #define GPIO_REG_MODE           0x40            /* [1:0]: 0 input, 1 output, 2 both, 3 analog */
+ #define GPIO_REG_SUPPLY         0x41
+ #define GPIO_REG_PULL           0x42            /* [2:0]: 0 to 3 up (30, 1.5, 31.5 uA, 1.5 with a boost), 4 down, 5 none */
++#define GPIO_REG_OUT_CTL        0x45            /* for the log: the output's source and strength */
+ #define GPIO_REG_ENABLE         0x46            /* [7] */
+ 
+ #define POLL_MS                 16
+@@ -333,20 +479,24 @@ buttons_poll(void)
  	const char *problem;
  	uint8_t status;
  
@@ -215,7 +299,7 @@ index 94dbbd5..8d27913 100644
  		} else if (said < 8) {
  			said++;
  			printf("buttons: reading %s: %s\n", pin.name, problem);
-@@ -399,9 +472,11 @@ pon_inputs(void)
+@@ -399,9 +549,11 @@ pon_inputs(void)
  	    "enabled %#x, latched %#x, pending %#x\n", r[0], (r[0] & PON_KPDPWR) ? "HELD" : "released",
  	    (r[0] & PON_RESIN) ? "HELD" : "released", r[REG_INT_SET_TYPE - REG_RT_STATUS], r[REG_INT_POLARITY_HIGH - REG_RT_STATUS],
  	    r[REG_INT_POLARITY_LOW - REG_RT_STATUS], r[REG_INT_ENABLED - REG_RT_STATUS], more[0], more[1]);
@@ -229,7 +313,32 @@ index 94dbbd5..8d27913 100644
  }
  
  /* Step 4 for the pin: it is volume up only if it is an input with a pull-up, and switched on. */
-@@ -428,13 +503,22 @@ pin_input(void)
+@@ -412,8 +564,22 @@ pin_input(void)
+ 	uint8_t c[8], status = 0;
+ 	unsigned mode, pull;
+ 
+-	printf("buttons: next: read the setup and the level of %s (registers 0x8d40 to 0x8d47, 0x8d10)\n", pin.name);
+-	problem = spmi_read(&pin, GPIO_REG_MODE, c, 8);
++	printf("buttons: next: read the setup and the level of %s (registers 0x40 to 0x43, 0x46, 0x10)\n", pin.name);
++	problem = spmi_read(&pin, GPIO_REG_MODE, c, 4);          /* four bytes: all this observer carries */
++	{
++		uint8_t enable = 0, out_ctl = 0, after = 0;
++
++		if (problem == NULL) {
++			problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1);
++		}
++		if (problem == NULL) {
++			(void)spmi_read(&pin, GPIO_REG_OUT_CTL, &out_ctl, 1);    /* for the log */
++			(void)spmi_read(&pin, 0x47, &after, 1);                  /* what is past the enable */
++		}
++		c[4] = out_ctl;
++		c[6] = enable;
++		c[7] = after;
++	}
+ 	if (problem == NULL) {
+ 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
+ 	}
+@@ -428,13 +594,53 @@ pin_input(void)
  	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
  	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
  	    (status & GPIO_LEVEL) ? "high (released)" : "LOW (held)");
@@ -244,9 +353,41 @@ index 94dbbd5..8d27913 100644
  	if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
 -		printf("buttons: volume up's pin is not an enabled input with a pull-up. Making it one is a write to the PMIC, "
 -		    "which this driver does not do: volume up is left alone\n");
-+		printf("buttons: the key's pin is not an enabled input with a pull-up (this driver does not write "
-+		    "PMIC registers): that key is left alone\n");
- 		return;
+-		return;
++		const char *problem;
++
++		/* the phone's firmware has not set the key's pin up. Make it an enabled
++		 * input with a pull-up through the same PMIC write the touch driver uses
++		 * (the 4 MB chnls mapping, opcode 0); v5 phones are left alone */
++		if (!arb_v8) {
++			printf("buttons: the key's pin is not ready and this arbiter's write side is not supported: left alone\n");
++			return;
++		}
++		printf("buttons: the key's pin is not ready -- writing what is missing\n");
++		if ((mode != 0 && (problem = spmi_write_v8(&pin, GPIO_REG_MODE, 0x00)) != NULL) ||
++		    ((c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7) != 1 && (problem = spmi_write_v8(&pin, GPIO_REG_SUPPLY, 0x01)) != NULL) ||
++		    (pull >= 4 && (problem = spmi_write_v8(&pin, GPIO_REG_PULL, 0x00)) != NULL) ||
++		    ((problem = spmi_write_v8(&pin, GPIO_REG_ENABLE, 0x80)) != NULL)) {
++			printf("buttons: setting the pin up: %s: the key is left alone\n", problem);
++			return;
++		}
++		{
++			uint8_t enable = 0;
++
++			if ((problem = spmi_read(&pin, GPIO_REG_MODE, c, 4)) != NULL ||
++			    (problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1)) != NULL) {
++				printf("buttons: re-reading the pin: %s: the key is left alone\n", problem);
++				return;
++			}
++			c[GPIO_REG_ENABLE - GPIO_REG_MODE] = enable;
++		}
++		mode = c[0] & 3;
++		pull = c[GPIO_REG_PULL - GPIO_REG_MODE] & 7;
++		if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
++			printf("buttons: the pin still not right after writing: left alone\n");
++			return;
++		}
++		printf("buttons: the pin is now mode %u, pull %u, enabled\n", mode, pull);
  	}
 -	volume_up.usable = true;
 -	volume_up.last = !(status & GPIO_LEVEL);
@@ -256,7 +397,7 @@ index 94dbbd5..8d27913 100644
  }
  
  static void
-@@ -460,21 +544,39 @@ buttons_thread(void *parameter, __unused wait_result_t result)
+@@ -460,21 +666,39 @@ buttons_thread(void *parameter, __unused wait_result_t result)
  	arb_observer = ml_io_map(ARB_OBSERVER_PHYS, ARB_OBSERVER_SIZE);
  	version = rd(arb_core + ARB_VERSION);
  	channels = rd(arb_core + ARB_FEATURES) & 0x7ff;
@@ -303,7 +444,7 @@ index 94dbbd5..8d27913 100644
  	if (steps < 3) {
  		goto out;
  	}
-@@ -553,6 +655,17 @@ hakios_buttons_init(void)
+@@ -553,6 +777,17 @@ hakios_buttons_init(void)
  	if (steps == 0) {
  		return;
  	}
@@ -320,6 +461,7 @@ index 94dbbd5..8d27913 100644
 +	}
  	if (kernel_thread_start(buttons_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
+ 	}
  	}
 diff --git a/xnu/files/bsd/dev/hakios.input.c b/xnu/files/bsd/dev/hakios.input.c
 index 5f8aeb8..67d80ad 100644

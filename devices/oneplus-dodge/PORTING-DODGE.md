@@ -246,9 +246,15 @@ adsp_mem/adsp_size/adsp_smem/adsp_smem_size 启动参数。
 - 这是 Gunyah 给这个 VM 的 stage-2 权限，与 Android VM 不同。要越过它需要 Gunyah
   Resource Manager 协商（gh_rm_drv 在 Android 内核里，我们链里没有）。
 
-## 按键（2026-10-27）
+## 按键（2026-10-28，三键全工作）
 
-电源键与音量上键工作（PON: KPDPWR + RESIN；本机 resin 是音量上，buttons_swap=1）。
-音量下键是 PM8550 sid1 GPIO6（buttons_pin=0x18e）；其引脚被固件留成输出且未上拉，
-驱动读它会"永远按下"。配成上拉需要向 PMIC 写寄存器——该写通道（chnls 页）在
-这个内核里触发挂死，已回退为不写、不启用该键。
+电源键与音量上键走 PON（KPDPWR + RESIN；本机 resin 是音量上，buttons_swap=1），
+天生配置好、只读即可。音量下键是 PM8550 sid1 GPIO6（buttons_pin=0x18d，寄存器
+0x8d00；0x18e 是 GPIO7，属主 EE4——写它内核直接中止）。固件把引脚留成禁用，
+驱动经仲裁器 chnls 通道（APID 610，cnfg 归属表属主 EE0，与触摸的通道同类）把
+DIG_EN_CTL(0x46)=0x80 写上即启用。修了三个叠着的 bug 才通：
+
+- 引脚号差一（0x8d00 才是 GPIO6：pinctrl 基址 0x8800 = GPIO1，+0x100/脚）
+- 写循环的 start 未初始化，状态查询瞬间退出误报"无应答"
+- v8 observer 每次只回 4 字节，8 字节读的后 4 字节是假 0——enable 位一直在
+  读假数据（写成功了也显示"still not right"）

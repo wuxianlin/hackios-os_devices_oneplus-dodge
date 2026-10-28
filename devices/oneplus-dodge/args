@@ -4,10 +4,12 @@
 # live here instead.
 #
 #   synaptics=1        the touch screen (the S3910 driver)
-#   buttons_pin=0x18e  the volume keys' PMIC GPIO: slave 1 (PM8550), GPIO6 --
-#                      its registers 0x8e00 of that slave. The key needs the pin
-#                      to be an enabled pulled-up input already; this phone's
-#                      firmware leaves it as an output, so that one key is off
+#   buttons_pin=0x18d  the volume-down key's PMIC GPIO: slave 1 (PM8550),
+#                      GPIO6 -- its registers 0x8d00 of that slave (0x18e is
+#                      GPIO7, another execution environment's channel: writing
+#                      it faults the kernel).  The firmware leaves the pin
+#                      disabled; the driver enables it through the arbiter's
+#                      chnls side (APID 610, owner EE 0, as the touch driver's)
 #   buttons_swap=1     the PON's resin key is volume UP here and the GPIO one
 #                      volume DOWN (the POCO X5 Pro's wiring is the reverse)
-synaptics=1 buttons=1 buttons_pin=0x18e buttons_swap=1
+synaptics=1 buttons=1 buttons_pin=0x18d buttons_swap=1
