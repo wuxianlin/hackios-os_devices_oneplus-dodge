@@ -1,0 +1,8 @@
+# devices/dodge/drivers/wifi/conf: the Wi-Fi drivers of this phone (docs/drivers-config.md).
+# CONFIG_HAKIOS_<NAME>=y in configs/dodge_defconfig builds one in; tools/hakios-config.py reads this file.
+
+driver WCN
+	file    bsd/dev/hakios.wcn.c
+	help    the WCN7850 radio's PCIe bring-up, in stages (wifi_pcie=N: 1 read-only probe, 2 WLAN_EN and
+	help    the GDSCs, ... 7 the endpoint's config space); also probes the CPUCP's SCMI mailbox, the way
+	help    in to the clock controller this VM's gcc window is filtered. Not a network driver: bring-up only

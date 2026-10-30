@@ -1,0 +1,6 @@
+# HakiOS defconfig for the OnePlus 13 (dodge, SM8750 "sun"): the common kernel's configuration, the
+# sun family's facts and this phone's own, put together the way Android puts a device's kernel
+# configuration together. What is built in and which arguments the kernel gets is configs/dodge.config's.
+#include common_defconfig
+#include sun.config
+#include dodge.config

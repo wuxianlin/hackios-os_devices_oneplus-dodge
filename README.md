@@ -1,48 +1,97 @@
-# HakiOS — OnePlus 13 (dodge) device port
+# Device: OnePlus 13 (dodge)
 
-Apple's open-source **XNU kernel** (`xnu-8796.121.2`, the iOS 16.5 kernel) and the
-**unmodified iOS 16.5 user space** on the **OnePlus 13** (dodge, Snapdragon 8 Elite / SM8750).
-A device port of [HakiOS](https://github.com/oosexgang/hackios-xnu-kernel), following its
-`devices/poco-x5-pro` layout.
+Qualcomm SM8750 ("sun", Snapdragon 8 Elite). Made by `tools/new-device.py` on 2026-10-29 from the
+phone's own device tree (`live.dtb`, pulled from its Android), then edited as the port went; this
+repository carries what is true of this phone and of its SoC family and of no other
+([docs/porting/repositories.md](https://github.com/oosexgang/hakios/blob/main/docs/porting/repositories.md)).
 
-Nothing is flashed: the UEFI goes in with `fastboot boot`, the whole system lives in RAM, and
-after a reboot the phone is back in Android. The [workflow](.github/workflows/build.yml)
-builds everything and packages a zip with a Linux/Windows one-click launcher.
-
-| Works | Does not work (yet) |
+| What | Value |
 |---|---|
-| Boot to SpringBoard, lock screen, wallpapers, apps (Settings, Clock, Notes, …) | Cellular, Bluetooth |
-| **Touchscreen** (Synaptics S3910): tap, drag, multitouch, edge/home gestures, 125 Hz | Charging under our kernel |
-| All 8 CPU cores | GPU acceleration (software rendering so far) |
-| Display 1440×3168, buttons, battery | Wi-Fi, sound, camera |
+| Board (the tree's `model`) | Qualcomm Technologies, Inc. Sun MTP,dodge |
+| Compatible | `qcom,sun-mtp qcom,sun qcom,sunp-mtp qcom,sunp qcom,mtp` |
+| SoC layer | `soc/` (sun) |
+| Drivers of its own | `drivers/input/hakios.dodge_touch.c` (Synaptics S3910), `drivers/wifi/hakios.wcn.c` (WCN7850 PCIe bring-up) |
 
-Touch was the hard part — no GENI SPI under the hypervisor, so it runs on GPIO bit-bang SPI
-with the chip's TouchComm protocol, powered through RPMh votes and the PMIC. The whole story:
-[devices/oneplus-dodge/PORTING-DODGE.md](devices/oneplus-dodge/PORTING-DODGE.md).
+## What works (seen on the phone, October 2026)
 
-## The release zip
+A run reaches SpringBoard on the loader's (UEFI's) framebuffer, with the touch screen, all three
+buttons, and the audio DSP's PAS bring-up steps; the WCN7850's PCIe link is probed read-only.
+What is not brought up yet: GPU, sound out, Wi-Fi as a network, UFS storage, modem, cameras,
+haptic, thermal. The full story of the touch panel alone (SPMI writes, RPMh votes through the
+RSC, GPIO bit-bang SPI, the TouchCom protocol) is in the head of
+[drivers/input/hakios.dodge_touch.c](drivers/input/hakios.dodge_touch.c).
 
-`boot.img` (what `fastboot boot` takes), `kernel.bin`, `mkpayload.py`, and `hackios.py` — a
-launcher for Linux **and** Windows (python3 + platform-tools). Put your `system.apfs`
-(built from Apple's IPSW by the HakiOS userland tools; no Apple files may be shipped) next
-to them and run `run.sh` / `run.bat`, or by hand:
+`configs/dodge.config` is the record: what is built in, and every boot-argument of the working
+runs. Four cores (`cpus=4`) is the proven boot; all eight have been booted (`cpus=8`) too.
+
+## The SoC addresses (`soc.args`)
+
+Read out of the tree by `tools/soc-args.py` and **hand-corrected**: the tool was written for the
+SC7280's tree, and on this one it misses six values. What it missed, and where each really is in
+the tree (all verified against `live.dtb`):
+
+| Argument | Value | Where in the tree |
+|---|---|---|
+| `soc_aoss` | `0xc300000` | `/soc/power-controller@c300000`, compatible `qcom,aoss-qmp` -- no SoC name in it, which the tool's matcher requires |
+| `soc_cmd_db` | `0x81c60000` | `/reserved-memory/aop_cmd_db_region@81c60000` -- the node is named `aop_cmd_db_region`, not the `cmd_db` the tool looks for |
+| `soc_mpss_mem` | `0x8ba00000` | `/reserved-memory/mpss_region@8ba00000` (`mpss_region`, not `mpss`) |
+| `modem_ipa_fw_at` | `0x9b090000` | `/reserved-memory/ipa_gsi_region@9b090000` (`ipa_gsi_region`, not `ipa_gsi`) |
+| `soc_smem` | `0x81d00000` | `/reserved-memory/smem_region@81d00000`: this tree has no `/soc/qcom,smem` node whose `memory-region` the tool follows |
+| `soc_pas_mpss` | -- | **not derivable**: `/soc/remoteproc-mss@04080000` (`qcom,sun-modem-pas`) carries no `qcom,pas-id`; find the PAS id in the vendor kernel before the modem is brought up |
+
+`pull-soc.sh` regenerates `soc.args` from the phone on adb (and would drop the hand corrections:
+re-apply them, or teach `tools/soc-args.py` the names above). The run scripts add the lines that
+differ from the kernel's built-in defaults to the command line (`tools/soc-only-changes.sh`).
+
+The audio DSP's own addresses (shared memory, DSP memory, command database, sequencer, IPCC) are
+NOT in `soc.args` -- the modem's arguments are -- but in `configs/dodge.config` as the staged
+`adsp_*` boot-arguments of the proven bring-up: `adsp_smem=0x81d00000 adsp_smem_size=0x200000
+adsp_mem=0x9ee00000 adsp_size=0x5080000 adsp_cmddb=0x81c60000 adsp_rsc=0x16520000
+adsp_ipcc=0x406000`, all of them straight out of the same tree (`smem_region`,
+`adspslpi_region@9ee00000` 0x5080000 bytes, `aop_cmd_db_region`, `rsc@16500000` drv-2,
+`qcom,ipcc@406000`).
+
+## Firmware
+
+`pull-firmware.sh` pulls the audio DSP's signed images off the phone (with root: they are
+unreadable by the shell user): `fw-audio/` = `adsp.mdt` + `adsp.b00..b36`, and the SM8750's
+`adsp_dtb.*` (the DSP's own device tree, its own PAS image, which TrustZone starts first), plus
+`cdsp.*`/`cdsp_dtb.*` as the cross-check of the release (`adsp_fw=cdsp`). Never committed.
+
+## Running it on the phone
+
+From the common repository (the UEFI pieces come from the Mu-Silicium tree beside it, symlinked in;
+every piece of the boot image is overridable -- the env below is this phone's):
 
 ```sh
-python3 hackios.py boot                    # fastboot-boot the UEFI+loader
-python3 hackios.py ramdisk system.apfs     # once per power-on, ~1 min
-python3 hackios.py run                     # SECS=900 CMDLINE="-v" to taste
+export UEFI_FD=$PWD/Mu-Silicium/Build/dodgePkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
+export DTB=$PWD/Mu-Silicium/Resources/DTBs/dodge.dtb
+export FD_BASE=0xA7100000 FD_SIZE=0x300000 PAYLOAD_BASE=0xF0000000 BOOT_HEADER=4
+make dodge_defconfig && make config && make kernel -j8 && make loader
+SOC_ARGS= make phone SECS=600
 ```
 
-## Layout
+`make phone` takes this device's arguments from the .config (`tools/hakios-config.py args`; the
+proven set: `cpus=4 adsp=1 adsp_noipcc=1 adsp_gicmask=1 adsp_bw=1 adsp_smem=0x81d00000
+adsp_smem_size=0x200000 adsp_mem=0x9ee00000 adsp_size=0x5080000 adsp_cmddb=0x81c60000
+adsp_rsc=0x16520000 adsp_ipcc=0x406000 buttons=1 buttons_pin=0x18d buttons_swap=1 synaptics=1
+wifi_pcie=1`) and builds `xnu-usb.img` with the env above. **`SOC_ARGS=` matters**: the modem's
+`soc_*` arguments of `soc.args` are dormant in this configuration (MODEM is left out) and with
+them the kernel's 607-character command line overflows and loses its tail; drop them until the
+modem is brought up, when they are what `soc.args` is for.
 
-| Piece | Where |
-|---|---|
-| the device directory | `devices/oneplus-dodge/` — drops into a HakiOS clone unchanged: `README.md`, `soc.args` (from the phone's device tree, `tools/soc-args.py`), `uefi/` (Mu-Silicium `BASE` + two patches + the XnuLoader), `PORTING-DODGE.md` |
-| shared-file changes | `patches/hakios-os.patch` — the minimum the device directory cannot hold: the touch driver (`xnu/files/bsd/dev/hakios.dodge_touch*`) and its two wiring lines, the `platform_dodge` entry + MPIDR map + GIC-stride patch in `xnuloader/loader.c`, and environment overrides in `mkxnuimg.py` |
-| build + launch | `.github/workflows/build.yml` (clones HakiOS, applies the port, builds kernel/loader/UEFI, packages), `package.sh`, `launcher/` |
+## The three changes this phone needed outside this repository
 
-`patches/hakios-os.patch` is generated by `git diff` in the HakiOS clone after the port is
-applied; `HACKIOS_REF` in the workflow pins the upstream commit it was last rebased on.
+Kept as commits on the fork of the common repository (see its `LOCAL-CHANGES.md`):
 
-HakiOS is an independent research project, not affiliated with or endorsed by Apple Inc.
-iOS, iPhone and Apple are trademarks of Apple Inc.
+1. `drivers/input/hakios.buttons.c` -- the version-7 PMIC arbiter layout of the SM8750 (its own
+   core/table/observer addresses, up to 1024 APIDs) and the pin-setup writes for the volume keys;
+2. `drivers/audio/hakios.adsp.c` -- the staged bring-up arguments (`adsp_*`), the RSC's
+   version-3 command layout, the DSP's second signed image, the page-at-a-time shared-memory
+   access, and the interrupt-storm avoidances;
+3. `xnuloader/loader.c` -- `platform_dodge`: the SM8750's core map (no uniform MPIDR shift) and
+   the twice-as-wide GIC redistributor stride, patched into the kernel while it loads.
+
+## Check
+
+`tools/hakios-device.py check dodge` (from the common repository).

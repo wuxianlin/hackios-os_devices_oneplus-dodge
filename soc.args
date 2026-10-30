@@ -1,0 +1,38 @@
+# devices/dodge/soc.args: the SoC addresses of the SM8750 ("sun"), read out of the phone's own device
+# tree (research/live.dtb, the tree of the phone's Android) by tools/soc-args.py and hand-corrected:
+# the tool was written for the SC7280's tree and misses six of them on this one (see README.md).
+# tools/modem-cycle.sh adds the lines that differ from the kernel's built-in defaults to the command line.
+#
+# Verified against the tree:
+#   qcom,ipa@3e00000            reg 0x3e00000 (ipa-base) + 0x40000, gsi-base 0x3e04000
+#   qcom,ipcc@406000            reg 0x406000
+#   power-controller@c300000    compatible "qcom,aoss-qmp" (no SoC in the name: the tool misses it)
+#   rsc@16500000                reg-names drv-0/1/2; drv-2 (ours) is the third pair, 0x16520000
+#   apps-smmu@15000000          reg 0x15000000 (same as the reference phone's)
+#   msm-imem@14680000           rounded down to its 2 MB block: 0x14600000 (same as the reference's)
+#   qcom,ipa@.../ipa_smmu_ap    iommus <0x7e 0x4a0>  (stream 0x4a0)
+#   qcom,ipa@.../ipa_smmu_uc    iommus <0x7e 0x4a2>  (stream 0x4a2)
+#   qcom,ipa_fws                qcom,pas-id 0xf, firmware-name "ipa_fws"
+#   aop_cmd_db_region@81c60000  0x20000 bytes (the tool looks for a node named "cmd_db", not "aop_cmd_db_region")
+#   mpss_region@8ba00000        0xf600000 bytes
+#   ipa_gsi_region@9b090000     0xa000 bytes
+#   smem_region@81d00000        0x200000 bytes (this tree has no /soc/qcom,smem node for the tool to follow)
+soc_ipa_base=0x3e40000
+soc_gsi_base=0x3e04000
+soc_ipcc=0x406000
+soc_aoss=0xc300000
+soc_rsc=0x16520000
+soc_apps_smmu=0x15000000
+soc_cmd_db=0x81c60000
+soc_mpss_mem=0x8ba00000
+modem_ipa_fw_at=0x9b090000
+soc_smem=0x81d00000
+soc_smem_size=0x200000
+soc_imem=0x14600000
+soc_ipa_stream=0x4a0
+soc_ipa_stream_uc=0x4a2
+# soc_pas_mpss is NOT here: this tree's remoteproc-mss@04080000 ("qcom,sun-modem-pas") carries no
+# qcom,pas-id, and the tool cannot read one. The modem is not brought up on this phone yet; find the
+# PAS id in the vendor kernel's table (drivers/remoteproc, qcom,sun-modem-pas) before it is.
+soc_pas_ipa=0xf
+soc_ipa_fw=ipa_fws
