@@ -51,6 +51,7 @@ jobs:
           rm -rf hackios/devices/dodge/.git
           cd hackios
           git apply --whitespace=nowarn devices/dodge/patches/kernel-common.patch
+          git apply --whitespace=nowarn devices/dodge/patches/kernel-common-inject.patch
           xnu/apply.sh     # the upstream's own XNU patch and files/, as they are
           # this port's kernel work on top: core changes and the driver registrations
           # (the A830 GPU bring-up conditions, the evolved mini-iokit, the adsp SCM revert)
@@ -156,7 +157,6 @@ jobs:
             || { echo '--- fetch failed, tail:'; tail -40 /tmp/fetch.log; exit 1; }
           # the images, GL required: without Mesa this zip cannot drive the GPU. The
           # library names are the tree's own (libhakios.*; the libredwood.* of the
-          # October phone-verified root was the tree before its rename)
           IMAGE_OPTS="GL=1" make images > /tmp/gl.log 2>&1 \
             || { echo '--- GL=1 images failed, tail:'; tail -40 /tmp/gl.log; exit 1; }
           # what a broken image would be missing (a disk-full mid-image once shipped green)
