@@ -538,7 +538,7 @@ hakios_wcn_init(void)
 			}
 		}
 	}
-	/* ---- the GPU probe: another SM8750 phone's working port drives
+	/* ---- the GPU probe: the annibale (Redmi K90, same SM8750) port drives
 	 * the GPU entirely through these four blocks -- gpucc 0x3d90000 (its
 	 * OWN clock controller with the TAYCAN_ELU PLLs and the CX GDSC, not
 	 * the central gcc that aborts for us), the GMU window 0x3d37000, the
@@ -683,7 +683,7 @@ hakios_wcn_init(void)
 	/* the gcc probe: the SAME reads external-aborted (fault_code 0x10) in
 	 * every fastboot-booted session; this kernel now boots through the
 	 * normal chain (flashed boot_a + set_active) -- if the restriction was
-	 * the boot mode, these now return real values (the reference port reads this
+	 * the boot mode, these now return real values (the K90 port reads this
 	 * very window daily). abort returns to the loader cleanly either way */
 	{
 		volatile uint32_t *g = (volatile uint32_t *)ml_io_map(0x01000000ULL, 0x1f4200);

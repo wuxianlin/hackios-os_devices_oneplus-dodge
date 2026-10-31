@@ -1,611 +1,417 @@
-diff --git a/drivers/core/hakios.stubs.c b/drivers/core/hakios.stubs.c
-index ed5ca7f..3f82c1e 100644
---- a/drivers/core/hakios.stubs.c
-+++ b/drivers/core/hakios.stubs.c
-@@ -41,6 +41,19 @@ void hakios_virtio_input_init(void) {}
- void hakios_goodix_init(void) {}
- #endif
- 
-+/* a device's own touch driver (devices/<name>/drivers/input/conf), started by this hub like the others */
-+#ifndef HAKIOS_DODGE_TOUCH
-+void hakios_dodge_touch_init(void) {}
-+#endif
+diff --git a/mkxnuimg.py b/mkxnuimg.py
+index c20bbe4..92c8a11 100755
+--- a/mkxnuimg.py
++++ b/mkxnuimg.py
+@@ -17,8 +17,15 @@ import argparse, gzip, os, subprocess, sys
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ MU = os.path.join(HERE, 'Mu-Silicium')
+ PREBUILT = os.path.join(HERE, 'devices', 'poco-x5-pro', 'prebuilt')
+-FD_BASE, FD_SIZE = 0x9FD00000, 0x200000
+-PAYLOAD_BASE, PAYLOAD_MAX = 0xF0000000, 0x04000000
++def env_int(name, default):
++    v = os.environ.get(name, '')
++    return int(v, 0) if v else default
 +
-+/* the Adreno 830 stepper and the RedwoodGPU service (devices/dodge/drivers/gpu) */
-+#ifndef HAKIOS_ADRENO8
-+void adreno8_init(void) {}
-+#endif
-+/* (the GPU service trio provides hakios_adreno_stop/quiesce/minute and
-+ * redwood_frames_shown when it is built; the common 642L driver does
-+ * otherwise -- either way nothing to stub here) */
-+
- #ifndef HAKIOS_BUTTONS
- void hakios_buttons_init(void) {}
- #endif
-@@ -69,7 +82,10 @@ void hakios_cpufreq_init(void) {}
- void hakios_ddr_quiesce(void) {}
- #endif
++# every piece can be overridden for another device's port (dodge: FD_BASE=0xA7100000
++# FD_SIZE=0x300000 BOOT_HEADER=4 UEFI_FD=.../dodgePkg/... DTB=.../dodge.dtb)
++FD_BASE, FD_SIZE = env_int('FD_BASE', 0x9FD00000), env_int('FD_SIZE', 0x200000)
++PAYLOAD_BASE, PAYLOAD_MAX = env_int('PAYLOAD_BASE', 0xF0000000), 0x04000000
++HEADER_VERSION = os.environ.get('BOOT_HEADER', '1')
  
--#ifndef HAKIOS_ADRENO
-+/* the Adreno 642L (ADRENO) or the dodge's RedwoodGPU service trio
-+ * (GPU_SERVICE, devices/dodge/drivers/gpu) provides these; only when
-+ * neither is built do they stand empty */
-+#if !defined(HAKIOS_ADRENO) && !defined(HAKIOS_GPU_SERVICE)
- void hakios_adreno_init(void) {}
- void hakios_adreno_quiesce(void) {}
- void hakios_adreno_stop(void) {}
-@@ -84,6 +100,11 @@ errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) {
- void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
- #endif
+ ap = argparse.ArgumentParser()
+ ap.add_argument('-p', '--payload')
+@@ -26,7 +33,7 @@ ap.add_argument('-o', '--output', default=os.path.join(HERE, 'xnu-redwood.img'))
+ ap.add_argument('--mode', default='RELEASE')
+ args = ap.parse_args()
  
-+/* a device's own Wi-Fi bring-up driver (devices/<name>/drivers/wifi/conf), started where the Wi-Fi's is */
-+#ifndef HAKIOS_WCN
-+void hakios_wcn_init(void) {}
-+#endif
-+
- #ifndef HAKIOS_ADSP
- void hakios_adsp_init(void) {}
- void hakios_adsp_stop(void) {}
-diff --git a/drivers/core/hakios.stubs.cpp b/drivers/core/hakios.stubs.cpp
-index be721ec..06c5046 100644
---- a/drivers/core/hakios.stubs.cpp
-+++ b/drivers/core/hakios.stubs.cpp
-@@ -4,7 +4,7 @@
-  */
- #include "MiniIOSurface.h"
+-fd_path = os.path.join(MU, f'Build/redwoodPkg/{args.mode}_CLANGPDB/FV/SILICIUM_UEFI.fd')
++fd_path = os.environ.get('UEFI_FD') or os.path.join(MU, f'Build/redwoodPkg/{args.mode}_CLANGPDB/FV/SILICIUM_UEFI.fd')
+ if os.path.isfile(fd_path):
+     shim_dir = os.path.join(MU, 'BootShim')
+     for f in ('BootShim.elf', 'BootShim.bin'):
+@@ -35,16 +42,25 @@ if os.path.isfile(fd_path):
+     subprocess.check_call(['make', 'REQUIRES_KERNEL_HEADER=1', f'FD_BASE={FD_BASE:#x}', f'FD_SIZE={FD_SIZE:#x}',
+                            f'CFLAGS=--target=aarch64-linux-gnu -DPAYLOAD_BASE={PAYLOAD_BASE:#x}'],
+                           cwd=shim_dir, stdout=subprocess.DEVNULL)
+-    parts = {'shim': os.path.join(shim_dir, 'BootShim.bin'), 'fd': fd_path,
+-             'dtb': os.path.join(MU, 'Resources/DTBs/redwood.dtb'), 'ramdisk': os.path.join(MU, 'Resources/ramdisk'),
++    parts = {'shim': os.environ.get('SHIM') or os.path.join(shim_dir, 'BootShim.bin'), 'fd': fd_path,
++             'dtb': os.environ.get('DTB') or os.path.join(MU, 'Resources/DTBs/redwood.dtb'),
++             'ramdisk': os.path.join(MU, 'Resources/ramdisk'),
+              'mkbootimg': os.path.join(MU, 'Resources/Scripts/mkbootimg.py')}
+-else:
++elif os.path.isfile(os.path.join(PREBUILT, 'SILICIUM_UEFI.fd')):
++    if os.environ.get('UEFI_FD'):
++        sys.exit(f'mkxnuimg: UEFI_FD={os.environ["UEFI_FD"]} not found -- refusing to fall back to the POCO prebuilt')
+     parts = {'shim': os.path.join(PREBUILT, 'BootShim.bin'), 'fd': os.path.join(PREBUILT, 'SILICIUM_UEFI.fd'),
+              'dtb': os.path.join(PREBUILT, 'device-tree.dtb'), 'ramdisk': os.path.join(PREBUILT, 'ramdisk'),
+              'mkbootimg': os.path.join(PREBUILT, 'mkbootimg.py')}
++else:
++    sys.exit('mkxnuimg: neither a Mu-Silicium build nor the prebuilt is there')
+ shim = open(parts['shim'], 'rb').read()
+ fd = open(parts['fd'], 'rb').read()
+-assert len(fd) == FD_SIZE, hex(len(fd))
++if len(fd) != FD_SIZE:
++    # the built image is what it is (the FDF sizes the FV; the memory map reserves more):
++    # carry the actual bytes, the shim copies exactly these
++    print(f'note: the FD is {len(fd):#x}, FD_SIZE said {FD_SIZE:#x}; using {len(fd):#x}')
++    FD_SIZE = len(fd)
  
--#ifndef HAKIOS_ADRENO
-+#if !defined(HAKIOS_ADRENO) && !defined(HAKIOS_GPU_SERVICE)
- /* the display's driver asks whether the GPU is done with a surface before it shows it: with no GPU nothing draws into one */
- bool
- MiniIOSurfaceDrawn(__unused MiniIOSurface * surface, __unused uint64_t milliseconds)
-diff --git a/drivers/input/hakios.buttons.c b/drivers/input/hakios.buttons.c
-index 3c9b01a..cced507 100644
---- a/drivers/input/hakios.buttons.c
-+++ b/drivers/input/hakios.buttons.c
-@@ -13,12 +13,17 @@
-  * ask for a transfer with. Reads go through the "observer" channels, which every system has for
-  * every peripheral, whoever owns it.
-  *
-- * THIS DRIVER ONLY READS. Nothing is written to either chip, neither a register of a PMIC nor
-- * the configuration of the pin: the PMICs make the phone's supplies, and a wrong write there
-+ * THIS DRIVER ONLY READS what the chips keep, with ONE exception, new with the version-8 arbiter
-+ * below: on an SM8750 the firmware of this chain leaves the volume keys' GPIO pin not set up, and
-+ * the driver writes the four configuration registers of that one pin (input, supply, pull-up,
-+ * enable) through the arbiter's write side, the touch driver's proven path, after reading what is
-+ * there and only writing what is missing. Everything else -- a register of a PMIC, the configuration
-+ * of any other pin -- is left alone: the PMICs make the phone's supplies, and a wrong write there
-  * can switch one off. The firmware reads the same keys itself (volume down and volume up choose
-- * between fastboot and recovery) and has left both inputs as they are needed; the driver checks
-- * that before it believes them, and where it finds something else it says so and leaves that
-- * key alone. The only thing written is the command word that asks the arbiter for a read.
-+ * between fastboot and recovery) and has left both inputs as they are needed where it ran; the
-+ * driver checks that before it believes them, and where it finds something else it says so and
-+ * leaves that key alone. The only other thing written is the command word that asks the arbiter
-+ * for a transfer.
-  *
-  * What a press is: the PON's "real time status" has a bit per key, set while the key is held
-  * (after the block's own debouncing); the GPIO's has the level of the pin. A thread reads the
-@@ -38,9 +43,15 @@
-  *   4  read how the keys' inputs are set up, and what they say now
-  *   5  watch them                                       (the default)
-  *
-- * Register layouts: Linux drivers/spmi/spmi-pmic-arb.c (arbiter version 5),
-+ * Register layouts: Linux drivers/spmi/spmi-pmic-arb.c (arbiter version 5; the SM8750's is
-+ * version 7 with the core and its APID table at 0x0c400000, the observer at 0x0c440000 with
-+ * 0x20 per APID and the write side ("chnls") at 0x0c500000 -- the arb_v8 paths below),
-  * drivers/input/misc/pm8941-pwrkey.c (the "pmk8350" kind), drivers/pinctrl/qcom/pinctrl-spmi-gpio.c,
-  * and the phone's own device tree (qcom,spmi@c440000, pon_hlos@1300, gpio_keys).
-+ *
-+ * Another phone's volume key: boot-arg buttons_pin=0xSIDPP (slave id << 8 | peripheral) names
-+ * another PMIC GPIO, and buttons_swap=1 swaps the two: the PON's resin key volume up and the
-+ * GPIO one volume down (the OnePlus 13's wiring; the POCO X5 Pro's is the reverse).
-  */
- #include <kern/clock.h>
- #include <kern/locks.h>
-@@ -130,10 +141,55 @@ struct peripheral {
- 	uint16_t        id;             /* slave << 8 | peripheral: the high byte of its register addresses */
- 	uint16_t        channel;
- 	bool            found;
-+	bool            usable;         /* the GPIO's key was taken from it (step 4) */
- };
- static struct peripheral pon = { .name = "the PMK8350's power-on block", .id = 0x013 };          /* registers 0x1300 of slave 0 */
- static struct peripheral pin = { .name = "GPIO6 of the PM7325", .id = 0x18d };                   /* registers 0x8d00 of slave 1 */
--
-+static bool buttons_swap;        /* boot-arg buttons_swap=1: resin is volume up, the GPIO key volume down */
-+static bool arb_v8;              /* version 8 of the arbiter (SM8750): its own core, table and observer */
-+static vm_offset_t arb_v8_core;  /* 0x0c400000: version at +0, channel count at +4, APID table at +0x2000 */
-+static vm_offset_t arb_v8_obs;   /* 0x0c440000: 0x20 per APID -- cmd +0x00, status +0x08, data +0x18 */
-+static vm_offset_t arb_v8_chn;   /* 0x0c500000, 0x1000 per APID -- the write side, exactly
-+                                  * as the touch driver maps it (one 4 MB mapping); only
-+                                  * opcode 0 ("extended write long") gets through the
-+                                  * hypervisor on this phone */
+ blob = shim + fd
+ if args.payload:
+@@ -60,7 +76,7 @@ kernel = args.output + '.kernel~'
+ open(kernel, 'wb').write(gzip.compress(blob, 6) + dtb)
+ try:
+     subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
+-                           '--header_version', '1', '-o', args.output])
++                           '--header_version', HEADER_VERSION, '-o', args.output])
+ finally:
+     os.unlink(kernel)
+ print(f'{args.output}: {os.path.getsize(args.output)} bytes (shim {len(shim)}, uncompressed {len(blob)})')
+diff --git a/userland/build.sh b/userland/build.sh
+index 94b77c9..d58a96b 100755
+--- a/userland/build.sh
++++ b/userland/build.sh
+@@ -440,7 +440,18 @@ done
+ # the loader takes.
+ if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
+ 	mkdir -p root/fw
+-	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
++	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[0-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
++fi
++# SM8750's audio DSP also has a device tree of its own, its own signed image (Linux's
++# sun_adsp_resource: dtb_pas_id 0x24, q6_adsp_dtb_region): adsp_dtb.mdt and its b-files.
++if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp_dtb.mdt ]; then
++	install -m 0644 ../fw-audio/adsp_dtb.mdt ../fw-audio/adsp_dtb.b0* root/fw/
++fi
++# the compute DSP of the same SoC (Linux's sun_cdsp_resource: pas_id 18, its tree
++# at pas 0x25) -- the cross-check for the audio DSP's release: adsp_fw=cdsp
++if [ -n "$ADSP" ] && [ -f ../fw-audio/cdsp.mdt ]; then
++	install -m 0644 ../fw-audio/cdsp.mdt ../fw-audio/cdsp.b0[0-9] ../fw-audio/cdsp.b[1-9][0-9] root/fw/
++	install -m 0644 ../fw-audio/cdsp_dtb.mdt ../fw-audio/cdsp_dtb.b0* root/fw/
+ fi
+ # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
+ # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
+diff --git a/xnu-deps/host/bin/xnu-clang b/xnu-deps/host/bin/xnu-clang
+index 6ea04a7..0423413 100755
+--- a/xnu-deps/host/bin/xnu-clang
++++ b/xnu-deps/host/bin/xnu-clang
+@@ -14,5 +14,5 @@ for a in "$@"; do
+     *) args+=("$a");;
+   esac
+ done
+-exec /usr/bin/$drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
++exec $drv -include "$HB/../../hostinc/xnu_clang_compat.h" -target arm64-apple-ios${XNU_SDK_VERSION:-16.5} --ld-path="$HB/ld64" \
+   -w "${extra[@]}" "${args[@]}"
+diff --git a/xnuloader/loader.c b/xnuloader/loader.c
+index ab5a781..2b6e158 100644
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -425,6 +425,165 @@ dt_prop_u64(struct dt_writer *w, const char *name, uint64_t value)
+ 	dt_prop(w, name, &value, sizeof(value));
+ }
+ 
++static void wdt_pet(void);
++static int wdt_armed;
 +
-+/* One register write to a peripheral's page through the "chnls" region -- the
-+ * touch driver's proven path (hakios.dodge_touch_hw.h s39_avspmi), with the
-+ * same lock so the two drivers' writes cannot interleave. */
-+static const char *
-+spmi_write_v8(const struct peripheral *p, uint8_t reg, uint8_t val)
++/*
++ * A translation check (the AT instruction) without touching the address:
++ * reading unmapped space would fault the loader (the phone falls back to
++ * fastboot). Same pattern as XnuLoader.c in the firmware volume.
++ */
++static int
++mapped(uint64_t addr)
 +{
-+	vm_offset_t w;
-+	uint64_t start, now, interval;
-+	uint32_t status;
++	uint64_t el, par;
 +
-+	/* the chnls region (0x1000 per APID), as the touch driver maps it (one 4 MB mapping): the
-+	 * write side, with opcode 0 ("extended register write long") -- under SM8750's hypervisor
-+	 * the only write path that reaches the PMIC (writes through the observer land in Gunyah's
-+	 * cache and read back as written). The channel must be this system's own (owner EE 0 at the
-+	 * cnfg region's table; another EE's channel -- the wrong pin's APID was one -- faults the
-+	 * kernel). This is the touch driver's proven path, with the same lock, so the two drivers'
-+	 * writes cannot interleave. */
-+	if (arb_v8_chn == 0) {
-+		arb_v8_chn = ml_io_map(0x0c500000UL, 0x400000);
-+		if (arb_v8_chn == 0) return "the write side is not mapped";
-+	}
-+	w = arb_v8_chn + 0x1000UL * p->channel;
-+	nanoseconds_to_absolutetime(10000 * (uint64_t)NSEC_PER_USEC, &interval);   /* a write is slower than a read */
-+	hakios_spmi_lock();
-+	wr(w + 0x10, val);
-+	wr(w + 0x00, (0u << 27) | ((uint32_t)reg << 4));      /* opcode 0 */
-+	start = mach_absolute_time();
-+	do {
-+		status = rd(w + 0x08);
-+		now = mach_absolute_time();
-+	} while (!(status & STATUS_DONE) && now - start < interval);
-+	hakios_spmi_unlock();
-+	if (!(status & STATUS_DONE)) return "no answer from the arbiter";
-+	if (status & (STATUS_FAILURE | STATUS_DENIED | STATUS_DROPPED)) return "the transfer did not go through";
-+	return NULL;
-+}
- /* How the reads have gone: said once a minute. */
- static struct {
- 	uint64_t reads, failed, total_ns, longest_ns, last_ns;
-@@ -146,20 +202,27 @@ static struct {
- static const char *
- spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t count)
- {
--	vm_offset_t channel = arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
-+	vm_offset_t channel = arb_v8 ?
-+	    arb_v8_obs + 0x20UL * p->channel :                 /* v8: the observer region, 0x20 per APID */
-+	    arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
- 	uint64_t start = mach_absolute_time(), now, interval, taken;
- 	uint32_t status, data[2];
- 	const char *problem = NULL;
- 
- 	nanoseconds_to_absolutetime(READ_TIMEOUT_US * (uint64_t)NSEC_PER_USEC, &interval);
- 	hakios_spmi_lock();
--	wr(channel + OBSERVER_COMMAND, COMMAND_READ | (uint32_t)reg << 4 | (count - 1));
-+	if (arb_v8) {
-+		/* v8's own encoding: opcode 13 ("extended read long") in [31:27], register in [11:4] */
-+		wr(channel + 0x00, (13u << 27) | ((uint32_t)reg << 4) | (count - 1));
++	__asm__ volatile ("mrs %0, CurrentEL" : "=r" (el));
++	if (el == 4) {
++		__asm__ volatile ("at s1e1r, %1; isb; mrs %0, par_el1" : "=r" (par) : "r" (addr) : "memory");
 +	} else {
-+		wr(channel + OBSERVER_COMMAND, COMMAND_READ | (uint32_t)reg << 4 | (count - 1));
++		__asm__ volatile ("at s1e2r, %1; isb; mrs %0, par_el1" : "=r" (par) : "r" (addr) : "memory");
 +	}
- 	do {
--		status = rd(channel + OBSERVER_STATUS);
-+		status = rd(channel + (arb_v8 ? 0x08 : OBSERVER_STATUS));
- 		now = mach_absolute_time();
- 	} while (!(status & STATUS_DONE) && now - start < interval);
--	data[0] = rd(channel + OBSERVER_DATA0);
--	data[1] = count > 4 ? rd(channel + OBSERVER_DATA1) : 0;
-+	data[0] = rd(channel + (arb_v8 ? 0x18 : OBSERVER_DATA0));
-+	data[1] = !arb_v8 && count > 4 ? rd(channel + OBSERVER_DATA1) : 0;
- 	hakios_spmi_unlock();
- 
- 	if (!(status & STATUS_DONE)) {
-@@ -192,6 +255,96 @@ spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t coun
-  * Which channel is that peripheral's. Several can be: one per system that may write to it. As
-  * Linux chooses: the first, unless a later one is ours to write through.
-  */
-+static void
-+find_channel_v8(struct peripheral *p, uint32_t channels)      /* the APID table: ppid in [19:8] */
-+{
-+	{
-+		/* bring-up: the table as it is -- 0x98b (the touch chip's page) is the
-+		 * control: the touch driver finds it, so must this scan */
-+		static bool said;
-+
-+		if (!said) {
-+			unsigned shown = 0;
-+
-+			said = true;
-+			for (uint32_t n = 0; n < channels && shown < 16; n++) {
-+				uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
-+
-+				if (!map) {
-+					continue;
-+				}
-+				printf("buttons: APID %u: map %#x (ppid %#x)\n", n, map, (map >> 8) & 0xfff);
-+				shown++;
-+			}
-+			if (shown == 0) {
-+				printf("buttons: the APID table reads all zero\n");
-+			}
-+			/* the touch driver finds ppid 0x98b at APID 663 on this phone:
-+			 * what does THIS scan see there, and around it (0x98e is GPIO6,
-+			 * a few entries on)? The answer says whether the scan works */
-+			{
-+				unsigned nonzero = 0;
-+
-+				for (uint32_t n = 0; n < channels; n++) {
-+					uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
-+
-+					if (map) {
-+						nonzero++;
-+					}
-+					if (n >= 660 && n <= 670) {
-+						printf("buttons: APID %u: map %#x (ppid %#x)\n", n, map, (map >> 8) & 0xfff);
-+					}
-+				}
-+				printf("buttons: %u non-zero entries in %u\n", nonzero, channels);
-+			}
-+			/* every APID that reaches a sid-1 or sid-9 GPIO peripheral
-+			 * (0x88 to 0x90): the key's GPIO may sit at more than one, and
-+			 * only some of them may have the write side mapped */
-+			for (uint32_t n = 0; n < channels; n++) {
-+				uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
-+				uint32_t ppid = (map >> 8) & 0xfff;
-+
-+				if ((ppid >> 8) == 1 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
-+					printf("buttons: APID %u: sid-1 GPIO at %#x\n", n, ppid);
-+				} else if ((ppid >> 8) == 9 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
-+					printf("buttons: APID %u: sid-9 GPIO at %#x\n", n, ppid);
-+				}
-+			}
-+			/* the ownership table (v7: the cnfg region, 4 bytes per APID, the
-+			 * low 3 bits the owner): an APID whose owner is not this system's
-+			 * EE rejects writes -- a channel of the power-on block's, of the
-+			 * touch's (whose write path works), and of the key's candidates
-+			 * say whose are whose */
-+			{
-+				vm_offset_t cnfg = ml_io_map(0xc42d000UL, 0x4000);
-+				const uint32_t interesting[] = { 581, 662, 132, 608, 609, 610, 611, 684, 685, 686, 696, 728 };
-+
-+				if (cnfg != 0) {
-+					for (unsigned i = 0; i < sizeof(interesting) / sizeof(interesting[0]); i++) {
-+						uint32_t own = rd(cnfg + 4 * interesting[i]);
-+
-+						printf("buttons: APID %u: owner %#x (EE %u)\n", interesting[i], own, own & 7);
-+					}
-+					/* (the mapping stays: taking it apart could take the
-+					 * arbiter's own with it, as the GIC's once did) */
-+				}
-+			}
-+		}
-+	}
-+	for (uint32_t n = 0; n < channels; n++) {
-+		uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
-+
-+		if ((map >> 8 & 0xfff) == p->id) {
-+			p->channel = n;
-+			p->found = true;
-+			printf("buttons: APID %u of the arbiter is %s (slave %u, peripheral %#x)\n",
-+			    n, p->name, p->id >> 8, p->id & 0xff);
-+			return;
-+		}
-+	}
-+	printf("buttons: no APID of the arbiter is %s (slave %u, peripheral %#x)\n", p->name, p->id >> 8, p->id & 0xff);
++	return (par & 1) == 0;
 +}
 +
++/*
++ * The Gunyah Resource Manager's message-queue capids: they are different every
++ * boot (allocated when the RM builds this VM), and the only place this boot's
++ * values live is the device tree ABL built -- the one with the RM's overlay.
++ * The FDT the firmware publishes is a small vendor-built one without it, so
++ * walk mapped memory for an FDT whose structure block carries the
++ * resource-manager node, and read reg = <tx_hi tx_lo rx_hi rx_lo> out of it.
++ */
++static int
++gunyah_rm_caps(uint64_t *tx, uint64_t *rx)
++{
++	static const efi_guid dtb_guid = { 0xb1b621d5, 0xf19c, 0x41a5, { 0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0 } };
++	const uint8_t *fdt = NULL;
++
++	for (uint64_t i = 0; ST->tables != NULL && i < ST->nr_tables && i < 32; i++) {
++		const efi_guid *g = &ST->tables[i].guid;
++
++		if (g->a == dtb_guid.a && g->b == dtb_guid.b && g->c == dtb_guid.c) {
++			uint64_t k;
++
++			for (k = 0; k < 8; k++) {
++				if (g->d[k] != dtb_guid.d[k]) {
++					break;
++				}
++			}
++			if (k == 8) {
++				fdt = (const uint8_t *)(uintptr_t)ST->tables[i].table;
++				break;
++			}
++		}
++	}
++	if (fdt == NULL || fdt[0] != 0xd0 || fdt[1] != 0x0d || fdt[2] != 0xfe || fdt[3] != 0xed) {
++		/* say which of the two it was: no DTB table at all, or one without
++		 * a usable header */
++		for (uint64_t i = 0; ST->tables != NULL && i < ST->nr_tables && i < 32; i++) {
++			const efi_guid *g = &ST->tables[i].guid;
++
++			print("gunyah: firmware table %d: %x-%x-%x-%x%x at %x\n", (int)i, (uint64_t)g->a, (uint64_t)g->b,
++			    (uint64_t)g->c, (uint64_t)g->d[0], (uint64_t)g->d[1], (uint64_t)(uintptr_t)ST->tables[i].table);
++		}
++		print("gunyah: %s (%d config tables)\n",
++		    fdt == NULL ? "no device tree in the firmware's configuration tables" : "the device table is not an FDT",
++		    ST->tables != NULL ? (int)ST->nr_tables : -1);
++		return 0;
++	}
++	print("gunyah: the firmware's FDT at %x, %x bytes; resource-manager node %s\n",
++	    (uint64_t)(uintptr_t)fdt,
++	    ((uint32_t)fdt[4] << 24) | ((uint32_t)fdt[5] << 16) | ((uint32_t)fdt[6] << 8) | fdt[7], "searched");
++			/* The boot shim parks the bootloader's x0..x3 and its own image
++	 * address on the page after the payload. Print them only: WHICH of
++	 * them (if any) carries this boot's device tree pointer is decided on
++	 * the host from the readings -- dereferencing or scanning from here
++	 * has faulted the loader three times (the hypervisor's stage-2 holes
++	 * are invisible to EL1 probing). */
++	{
++		struct payload_header *ph = (struct payload_header *)PAYLOAD_BASE;
++		uint64_t end = PAYLOAD_BASE + ((8 + (uint64_t)ph->size + 15) & ~15ULL);
++		const uint64_t *h = (const uint64_t *)(uintptr_t)((end + 0xfff) & ~0xfffULL);
++
++		print("gunyah: handoff x0=%x x1=%x x2=%x x3=%x image=%x\n",
++		    h[0], h[1], h[2], h[3], h[4]);
++		(void)fdt;
++		return 0;
++	}
++	uint32_t stru = ((uint32_t)fdt[8] << 24) | ((uint32_t)fdt[9] << 16) | ((uint32_t)fdt[10] << 8) | fdt[11];
++	uint32_t stru_size = ((uint32_t)fdt[36] << 24) | ((uint32_t)fdt[37] << 16) | ((uint32_t)fdt[38] << 8) | fdt[39];
++	const uint8_t *p = fdt + stru, *pend = p + stru_size;
++	const char *strs = (const char *)fdt +
++	    ((((uint32_t)fdt[12] << 24) | ((uint32_t)fdt[13] << 16) | ((uint32_t)fdt[14] << 8) | fdt[15]));
++
++	while (p + 4 <= pend) {
++		uint32_t tok = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++
++		if (tok == 1) {                    /* BEGIN_NODE: the name is inline */
++			const char *name = (const char *)(p + 4);
++			uint64_t n = 0;
++
++			while (name[n] != 0 && &name[n + 1] < (const char *)pend) {
++				n++;
++			}
++			/* "qcom,resource-manager-rpc@" is 26 characters */
++			static const char want[] = "qcom,resource-manager-rpc@";
++			uint64_t m;
++
++			for (m = 0; m < 26 && m < n; m++) {
++				if (name[m] != want[m]) {
++					break;
++				}
++			}
++			if (m == 26) {
++				/* skip the name, then walk this node's properties for reg */
++				const uint8_t *q = (const uint8_t *)&name[n + 1];
++
++				q = (const uint8_t *)(((uintptr_t)q + 3) & ~(uintptr_t)3);
++				while (q + 12 <= pend) {
++					uint32_t t2 = ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 8) | q[3];
++					uint32_t len, nameoff;
++
++					if (t2 == 2 || t2 == 1) {        /* END_NODE: done with the node */
++						break;
++					}
++					if (t2 != 3) {                   /* PROP */
++						break;
++					}
++					len = ((uint32_t)q[4] << 24) | ((uint32_t)q[5] << 16) | ((uint32_t)q[6] << 8) | q[7];
++					nameoff = ((uint32_t)q[8] << 24) | ((uint32_t)q[9] << 16) | ((uint32_t)q[10] << 8) | q[11];
++					const char *pn = &strs[nameoff];
++					const uint8_t *val = q + 12;
++
++					if (pn[0] == 'r' && pn[1] == 'e' && pn[2] == 'g' && pn[3] == 0 && len >= 16) {
++						*tx = ((uint64_t)val[0] << 56) | ((uint64_t)val[1] << 48) | ((uint64_t)val[2] << 40) |
++						    ((uint64_t)val[3] << 32) | ((uint64_t)val[4] << 24) | ((uint64_t)val[5] << 16) |
++						    ((uint64_t)val[6] << 8) | val[7];
++						*rx = ((uint64_t)val[8] << 56) | ((uint64_t)val[9] << 48) | ((uint64_t)val[10] << 40) |
++						    ((uint64_t)val[11] << 32) | ((uint64_t)val[12] << 24) | ((uint64_t)val[13] << 16) |
++						    ((uint64_t)val[14] << 8) | val[15];
++						return 1;
++					}
++					q = val + ((len + 3) & ~(uint32_t)3);
++				}
++				return 0;                           /* the node was there but had no reg we could use */
++			}
++			p = (const uint8_t *)&name[n + 1];
++			p = (const uint8_t *)(((uintptr_t)p + 3) & ~(uintptr_t)3);
++		} else if (tok == 2 || tok == 4) {  /* END_NODE / NOP */
++			p += 4;
++		} else if (tok == 3) {              /* PROP at top level (should not happen) */
++			uint32_t len = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
++
++			p += 12 + ((len + 3) & ~(uint32_t)3);
++		} else {
++			break;
++		}
++	}
++	return 0;
++}
++
+ /* Seconds since 1970 by the firmware's real-time clock, or 0 when it has none or it is not set. */
+ static uint64_t
+ firmware_epoch(void)
+@@ -524,8 +683,25 @@ struct platform {
+ 	int core_shift;                  /* ... in this bit of MPIDR: the phone numbers them in the second affinity field */
+ 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
+ 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
++	const uint64_t *mpidr_map;       /* cores numbered by MPIDRs with no uniform shift (as on SM8750), NULL: core_shift */
++	uint64_t gic_redist_size;        /* the redistributor window: cores * stride (0: the kernel's 0x20000) */
+ };
+ 
++/* MPIDR of core n / the core an MPIDR belongs to, by the map when there is one. */
++static uint64_t
++core_mpidr(const struct platform *p, int n)
++{
++	return p->mpidr_map != NULL ? p->mpidr_map[n] : (uint64_t)n << p->core_shift;
++}
++
++static int
++mpidr_core(const struct platform *p, uint64_t mpidr)
++{
++	if (p->mpidr_map == NULL) return (int)(mpidr >> p->core_shift);
++	for (int i = 0; i < p->cores; i++) if (p->mpidr_map[i] == mpidr) return i;
++	return -1;
++}
++
+ static const struct platform platform_qemu_virt = {
+ 	.name = "qemu-virt", .io_base = 0x08000000, .io_size = 0x08000000,
+ 	.gic_dist = 0x08000000, .gic_redist = 0x080A0000, .uart = 0x09000000, .psci_hvc = 1,
+@@ -551,6 +727,18 @@ static const struct platform platform_redwood = {
+ 	.small_cores = 0x0f,
+ };
+ 
++static const struct platform platform_dodge = {
++	/* OnePlus 13 (SM8750): like redwood, plus a non-uniform MPIDR map and a twice-as-wide
++	 * GIC redistributor stride, both patched around below (mpidr_core, the stride scan). */
++	.name = "dodge", .io_base = 0x00400000, .io_size = 0x3FC00000,
++	.gic_dist = 0x16000000, .gic_redist = 0x16080000, .gic_redist_size = 0x200000,
++	.uart = 0, .log_other_cpu = 1,
++	/* Phoenix-L prime + 3 Phoenix-L performance cores (MPIDR 0x000-0x500), then a cluster
++	 * of four Phoenix-M at 0x10000.. (the kernel's MPIDR map is dodge_mpidr below). */
++	.cores = 8, .core_shift = 8, .mpidr_map = (const uint64_t[]){ 0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x10000, 0x10100 },
++	.small_cores = 0x3f,
++};
++
+ /* ------------------------------------------------------------------------ */
+ 
  static void
- find_channel(struct peripheral *p, uint32_t channels)
+@@ -2432,7 +2620,7 @@ wdt_arm(void)
  {
-@@ -241,6 +394,7 @@ find_channel(struct peripheral *p, uint32_t channels)
- #define GPIO_REG_MODE           0x40            /* [1:0]: 0 input, 1 output, 2 both, 3 analog */
- #define GPIO_REG_SUPPLY         0x41
- #define GPIO_REG_PULL           0x42            /* [2:0]: 0 to 3 up (30, 1.5, 31.5 uA, 1.5 with a boost), 4 down, 5 none */
-+#define GPIO_REG_OUT_CTL        0x45            /* for the log: the output's source and strength */
- #define GPIO_REG_ENABLE         0x46            /* [7] */
+ 	uint64_t ctl = 0, since = 0;
  
- #define POLL_MS                 16
-@@ -315,20 +469,24 @@ buttons_poll(void)
- 	const char *problem;
- 	uint8_t status;
- 
--	if (power.usable || volume_down.usable) {
-+	if (power.usable || volume_down.usable || volume_up.usable) {
- 		problem = spmi_read(&pon, REG_RT_STATUS, &status, 1);
- 		if (problem == NULL) {
- 			button_look(&power, status & PON_KPDPWR);
--			button_look(&volume_down, status & PON_RESIN);
-+			/* buttons_swap=1: the PON's resin key is volume up and the PMIC GPIO one
-+			 * volume down (the OnePlus 13's wiring; the POCO X5 Pro's is the reverse) */
-+			button_look(buttons_swap ? &volume_up : &volume_down, status & PON_RESIN);
- 		} else if (said < 8) {
- 			said++;
- 			printf("buttons: reading %s: %s\n", pon.name, problem);
+-	if (PLAT != &platform_redwood) {
++	if (PLAT != &platform_redwood && PLAT != &platform_dodge) {
+ 		return; /* SMC is not routed anywhere useful on QEMU virt */
+ 	}
+ 	uint64_t st = smc_call(VIRT_WDT_STATUS, 0, 0, &ctl, &since);
+@@ -2850,7 +3038,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	block_write_part = -1;
+ 	for (const char *c = pi.cmdline; *c; c++) {
+ 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
+-			kernel_mpidr = (uint64_t)(c[8] - '0') << PLAT->core_shift;
++			kernel_mpidr = core_mpidr(PLAT, c[8] - '0');
+ 		}
+ 		more_cores |= (starts_with(c, "cpus=") || starts_with(c, "cpumask=")) && (c == pi.cmdline || c[-1] == ' ');
+ 		battery_requested |= starts_with(c, "battery=1") && (c == pi.cmdline || c[-1] == ' ') &&
+@@ -2914,6 +3102,24 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
  		}
  	}
--	if (volume_up.usable) {
-+	/* the GPIO key only when the pin was taken (its .usable flag set by pin_input);
-+	 * the PON's resin key sets the OTHER flag, which must not cause a GPIO read */
-+	if (pin.usable) {
- 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
- 		if (problem == NULL) {
--			button_look(&volume_up, !(status & GPIO_LEVEL));
-+			button_look(buttons_swap ? &volume_down : &volume_up, !(status & GPIO_LEVEL));
- 		} else if (said < 8) {
- 			said++;
- 			printf("buttons: reading %s: %s\n", pin.name, problem);
-@@ -381,9 +539,11 @@ pon_inputs(void)
- 	    "enabled %#x, latched %#x, pending %#x\n", r[0], (r[0] & PON_KPDPWR) ? "HELD" : "released",
- 	    (r[0] & PON_RESIN) ? "HELD" : "released", r[REG_INT_SET_TYPE - REG_RT_STATUS], r[REG_INT_POLARITY_HIGH - REG_RT_STATUS],
- 	    r[REG_INT_POLARITY_LOW - REG_RT_STATUS], r[REG_INT_ENABLED - REG_RT_STATUS], more[0], more[1]);
--	power.usable = volume_down.usable = true;
-+	struct button *resin_key = buttons_swap ? &volume_up : &volume_down;
-+
-+	power.usable = resin_key->usable = true;
- 	power.last = r[0] & PON_KPDPWR;
--	volume_down.last = r[0] & PON_RESIN;
-+	resin_key->last = r[0] & PON_RESIN;
- }
  
- /* Step 4 for the pin: it is volume up only if it is an input with a pull-up, and switched on. */
-@@ -394,8 +554,22 @@ pin_input(void)
- 	uint8_t c[8], status = 0;
- 	unsigned mode, pull;
- 
--	printf("buttons: next: read the setup and the level of %s (registers 0x8d40 to 0x8d47, 0x8d10)\n", pin.name);
--	problem = spmi_read(&pin, GPIO_REG_MODE, c, 8);
-+	printf("buttons: next: read the setup and the level of %s (registers 0x40 to 0x43, 0x46, 0x10)\n", pin.name);
-+	problem = spmi_read(&pin, GPIO_REG_MODE, c, 4);          /* four bytes: all this observer carries */
-+	{
-+		uint8_t enable = 0, out_ctl = 0, after = 0;
-+
-+		if (problem == NULL) {
-+			problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1);
-+		}
-+		if (problem == NULL) {
-+			(void)spmi_read(&pin, GPIO_REG_OUT_CTL, &out_ctl, 1);    /* for the log */
-+			(void)spmi_read(&pin, 0x47, &after, 1);                  /* what is past the enable */
-+		}
-+		c[4] = out_ctl;
-+		c[6] = enable;
-+		c[7] = after;
-+	}
- 	if (problem == NULL) {
- 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
- 	}
-@@ -410,13 +584,53 @@ pin_input(void)
- 	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
- 	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
- 	    (status & GPIO_LEVEL) ? "high (released)" : "LOW (held)");
-+	struct button *pin_key = buttons_swap ? &volume_down : &volume_up;
-+
-+	/* The phone's own system configures the key's pin from its device tree; this
-+	 * chain's firmware leaves it as the bootloader had it. Configuring it here
-+	 * would take a PMIC register write through the arbiter's write side, and
-+	 * that page kills this kernel on this phone -- so the key is used only when
-+	 * the pin already is an enabled pulled-up input, and left alone otherwise
-+	 * (a pin that reads stuck LOW would look like the key held down forever). */
- 	if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
--		printf("buttons: volume up's pin is not an enabled input with a pull-up. Making it one is a write to the PMIC, "
--		    "which this driver does not do: volume up is left alone\n");
--		return;
-+		const char *problem;
-+
-+		/* the phone's firmware has not set the key's pin up. Make it an enabled
-+		 * input with a pull-up through the same PMIC write the touch driver uses
-+		 * (the 4 MB chnls mapping, opcode 0); v5 phones are left alone */
-+		if (!arb_v8) {
-+			printf("buttons: the key's pin is not ready and this arbiter's write side is not supported: left alone\n");
-+			return;
-+		}
-+		printf("buttons: the key's pin is not ready -- writing what is missing\n");
-+		if ((mode != 0 && (problem = spmi_write_v8(&pin, GPIO_REG_MODE, 0x00)) != NULL) ||
-+		    ((c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7) != 1 && (problem = spmi_write_v8(&pin, GPIO_REG_SUPPLY, 0x01)) != NULL) ||
-+		    (pull >= 4 && (problem = spmi_write_v8(&pin, GPIO_REG_PULL, 0x00)) != NULL) ||
-+		    ((problem = spmi_write_v8(&pin, GPIO_REG_ENABLE, 0x80)) != NULL)) {
-+			printf("buttons: setting the pin up: %s: the key is left alone\n", problem);
-+			return;
-+		}
-+		{
-+			uint8_t enable = 0;
-+
-+			if ((problem = spmi_read(&pin, GPIO_REG_MODE, c, 4)) != NULL ||
-+			    (problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1)) != NULL) {
-+				printf("buttons: re-reading the pin: %s: the key is left alone\n", problem);
-+				return;
++	/* The kernel walks the GIC redistributors in steps it hardcodes as 0x20000; on SoCs whose
++	 * stride is 0x40000 (SM8750 among them) that bus-errors before the first interrupt. Patch
++	 * the step in the image when the platform says it differs: an "add xN, xN, #stride"
++	 * (encoding the stride) feeding the next instruction's compare loop register. */
++	if (PLAT->gic_redist_size != 0 && PLAT->gic_redist_size / PLAT->cores != 0x20000) {
++		uint32_t stride = (uint32_t)(PLAT->gic_redist_size / PLAT->cores);
++		for (uint32_t *q = (uint32_t *)kern_lo; (uint8_t *)q + 8 <= (uint8_t *)kern_hi; q++) {
++			uint32_t add = q[0], cmp = q[1];
++			int add_ok = (add & 0xff000000u) == 0x91000000u && ((add >> 22) & 3) == 1 && ((add >> 10) & 0xfff) == 0x020;
++			int cmp_ok = (cmp & 0xfffffc1fu) == 0xeb0a001fu && ((cmp >> 5) & 0x1f) == (add & 0x1f);
++			if (add_ok && cmp_ok) {
++				q[0] = (add & 0xffc003ffu) | ((uint32_t)stride >> 12) << 10;
++				print("gic walk stride patched to %x at %x\n", (uint64_t)stride, (uint64_t)(uintptr_t)q);
++				break;
 +			}
-+			c[GPIO_REG_ENABLE - GPIO_REG_MODE] = enable;
 +		}
-+		mode = c[0] & 3;
-+		pull = c[GPIO_REG_PULL - GPIO_REG_MODE] & 7;
-+		if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
-+			printf("buttons: the pin still not right after writing: left alone\n");
-+			return;
-+		}
-+		printf("buttons: the pin is now mode %u, pull %u, enabled\n", mode, pull);
- 	}
--	volume_up.usable = true;
--	volume_up.last = !(status & GPIO_LEVEL);
-+	pin_key->usable = true;
-+	pin.usable = true;
-+	pin_key->last = !(status & GPIO_LEVEL);
- }
- 
- static void
-@@ -442,21 +656,39 @@ buttons_thread(void *parameter, __unused wait_result_t result)
- 	arb_observer = ml_io_map(ARB_OBSERVER_PHYS, ARB_OBSERVER_SIZE);
- 	version = rd(arb_core + ARB_VERSION);
- 	channels = rd(arb_core + ARB_FEATURES) & 0x7ff;
--	printf("buttons: PMIC arbiter version %#x, %u channels\n", version, channels);
--	if (version < ARB_VERSION_5 || version >= ARB_VERSION_7) {
--		printf("buttons: this driver knows version 5 of the arbiter only: no buttons\n");
-+	/* SM8750: the version-5 core at 0xc440000 is this SoC's observer region; the
-+	 * core with the version and the APID table sits at 0xc400000 (version 7 on
-+	 * this phone -- the touch driver's proven access: observer 0x20 per APID) */
-+	arb_v8_core = ml_io_map(0x0c400000UL, 0x4000);
-+	arb_v8_obs = ml_io_map(0x0c440000UL, 0x10000);
-+	if (rd(arb_v8_core) >> 28 >= 7) {
-+		arb_v8 = true;
-+		channels = rd(arb_v8_core + 4) & 0x7ff;
-+		version = rd(arb_v8_core);
 +	}
-+	printf("buttons: PMIC arbiter version %#x, %u channels%s\n", version, channels, arb_v8 ? " (v7 layout)" : "");
-+	if (!arb_v8 && (version < ARB_VERSION_5 || version >= ARB_VERSION_7)) {
-+		printf("buttons: this driver knows versions 5 and 8 of the arbiter: no buttons\n");
- 		goto out;
- 	}
--	if (channels == 0 || channels > ARB_MAX_CHANNELS) {
--		channels = ARB_MAX_CHANNELS;
-+	/* the version-5 table is what ARB_MAX_CHANNELS was sized for; the v7 one
-+	 * holds up to 1024 APIDs (this phone's says 896, and the touch chip's APID
-+	 * is 663 -- beyond the old cap, which is why the keys were never found) */
-+	if (channels == 0 || channels > (arb_v8 ? 1024 : ARB_MAX_CHANNELS)) {
-+		channels = arb_v8 ? 1024 : ARB_MAX_CHANNELS;
- 	}
- 	if (steps < 2) {
- 		goto out;
- 	}
- 
- 	printf("buttons: step 2: look through the arbiter's table for the channels of the two peripherals\n");
--	find_channel(&pon, channels);
--	find_channel(&pin, channels);
-+	if (arb_v8) {
-+		find_channel_v8(&pon, channels);
-+		find_channel_v8(&pin, channels);
++
+ 	/* --- boot_args ------------------------------------------------------ */
+ 	struct boot_args *ba = (struct boot_args *)ba_pa;
+ 	memset(ba, 0, sizeof(*ba));
+@@ -3046,6 +3252,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	dt_prop_u64(&w, "dram-base", phys_base);
+ 	dt_prop_u64(&w, "dram-size", win_size);
+ 	dt_prop_u32(&w, "debug-enabled", 1);
++	/* this boot's Gunyah Resource-Manager message-queue capids (different
++	 * every boot; read out of the firmware's device tree above) */
++	uint64_t gh_tx = 0, gh_rx = 0;
++
++	if (gunyah_rm_caps(&gh_tx, &gh_rx)) {
++		print("gunyah: RM msgq capids tx %x%08x rx %x%08x\n",
++		    (uint32_t)(gh_tx >> 32), (uint32_t)gh_tx, (uint32_t)(gh_rx >> 32), (uint32_t)gh_rx);
++		dt_prop_u64(&w, "gunyah-rm-tx", gh_tx);
++		dt_prop_u64(&w, "gunyah-rm-rx", gh_rx);
 +	} else {
-+		find_channel(&pon, channels);
-+		find_channel(&pin, channels);
++		print("gunyah: no resource-manager node in the firmware's device tree\n");
 +	}
- 	if (steps < 3) {
- 		goto out;
- 	}
-@@ -535,6 +767,17 @@ hakios_buttons_init(void)
- 	if (steps == 0) {
- 		return;
- 	}
-+	/* buttons_pin=0xSIDPP: another phone's volume key GPIO (slave id << 8 | peripheral),
-+	 * buttons_swap=1: the PON's resin key is volume up, the GPIO one volume down */
-+	{
-+		uint32_t pin_id = 0;
-+
-+		if (PE_parse_boot_argn("buttons_pin", &pin_id, sizeof(pin_id)) && pin_id != 0) {
-+			pin.id = (uint16_t)pin_id;
-+			pin.name = "the boot-arg's PMIC GPIO";
-+		}
-+		PE_parse_boot_argn("buttons_swap", &buttons_swap, sizeof(buttons_swap));
-+	}
- 	if (kernel_thread_start(buttons_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
- 		thread_deallocate(thread);
- 	}
-diff --git a/drivers/input/hakios.input.c b/drivers/input/hakios.input.c
-index 8e5e556..ac69d25 100644
---- a/drivers/input/hakios.input.c
-+++ b/drivers/input/hakios.input.c
-@@ -224,10 +224,15 @@ hakios_input_init(void)
- 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-touch") == NULL) {
- 		printf("hakios-touch: cannot create the device\n");
- 	}
-+	/* the same queue under its earlier name, for user space built before the rename */
-+	(void)devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-touch");
- 	exit_call = thread_call_allocate(exit_hold_elapsed, NULL);
- 	hakios_cpufreq_init();
- 	hakios_virtio_input_init();
- 	hakios_goodix_init();
-+	hakios_dodge_touch_init();        /* the OnePlus 13's Synaptics S3910: a device driver (devices/dodge) */
-+	extern void adreno8_init(void);    /* the A830 stepper: a device driver (devices/dodge, adreno8=N) */
-+	adreno8_init();
- 	hakios_buttons_init();
- 	hakios_battery_init();
- 	hakios_ufs_init();
-@@ -235,5 +240,12 @@ hakios_input_init(void)
- 	hakios_adreno_init();
- 	hakios_wifi_init();
- 	hakios_adsp_init();
-+	{
-+		/* the OnePlus 13's WCN7850 PCIe bring-up: a device driver (devices/dodge), started here
-+		 * because the common Wi-Fi driver's start is */
-+		extern void hakios_wcn_init(void);
-+
-+		hakios_wcn_init();
-+	}
- 	hakios_mpss_init();
- }
-diff --git a/tools/boot-args.py b/tools/boot-args.py
-index 3b7906e..7580317 100755
---- a/tools/boot-args.py
-+++ b/tools/boot-args.py
-@@ -60,11 +60,11 @@ USER = re.compile(r'strstr\(\s*(?:arguments|args|argument)\s*,\s*"([a-z][a-z0-9_
- GROUPS = [
-     ("GPU and display", r"hakios\.(adreno|gpu)\.|MiniIO(Surface|MobileFramebuffer)|gl_osmesa|eagl\.c"),
-     ("Security stand-ins", r"kern_minimac|miniamfi"),
--    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
-+    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|wcn)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
-     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
-     ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard)\."),
-     ("Cameras", r"hakios\.camera\."),
--    ("Touch and buttons", r"hakios\.(goodix|input|buttons|virtio_input)\."),
-+    ("Touch and buttons", r"hakios\.(goodix|input|buttons|virtio_input|[a-z0-9_]*touch)\."),
-     ("Storage and APFS", r"hakios\.(ufs|ufshc|virtio_blk|sparse|apfs_check)\.|apfs_vfsops\."),
-     ("Network", r"hakios\.(net|virtio_net)\."),
-     ("Haptics and torch", r"hakios\.(haptic|torch)\."),
-@@ -98,8 +98,16 @@ SET_BY = {
+ 	/* what MobileGestalt answers "main screen scale" from: 3 device pixels per point */
+ 	dt_prop_u32(&w, "display-scale", 3);
+ 	dt_prop_u32(&w, "display-rotation", 0);
+@@ -3168,13 +3386,13 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	 * this loader stays on while it watches is not the kernel's, nor any the firmware runs.
+ 	 */
+ 	uint64_t cpu_mpidr[8] = { kernel_mpidr };
+-	int cpu_count = 1, boot_core = (int)(kernel_mpidr >> plat->core_shift);
++	int cpu_count = 1, boot_core = mpidr_core(plat, kernel_mpidr);
  
+ 	if (more_cores) {
+ 		for (int distance = 1; distance < plat->cores; distance++) {
+ 			for (int side = 0; side < 2; side++) {
+ 				int core = side == 0 ? boot_core + distance : boot_core - distance;
+-				uint64_t mpidr = (uint64_t)core << plat->core_shift;
++				uint64_t mpidr = core_mpidr(plat, core);
+ 				int64_t state;
  
- def tracked(root):
-+    import glob
-     out = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True).stdout
--    return [p.decode() for p in out.split(b"\0") if p]
-+    files = [p.decode() for p in out.split(b"\0") if p]
-+    # ... and the drivers of the SoC and device repositories checked out beside this one (devices/<name>/drivers/,
-+    # devices/<name>/soc/drivers/, socs/<name>/drivers/: docs/porting/repositories.md). They are git repositories of
-+    # their own that the common repository ignores, so git ls-files does not name them -- but their boot-arguments
-+    # are as real as any other driver's, and CONFIG_BOOTARGS and the symbol table are checked against this catalogue.
-+    for pattern in ("devices/*/drivers/**", "devices/*/soc/drivers/**", "socs/*/drivers/**"):
-+        files += [os.path.relpath(p, root).replace(os.sep, "/") for p in glob.glob(os.path.join(root, pattern), recursive=True)]
-+    return files
- 
- 
- def scan(root, keep=None):
-@@ -119,8 +127,9 @@ def scan(root, keep=None):
-         if f == "xnu/hakios.patch":
-             text = "\n".join(l[1:] for l in text.splitlines() if l.startswith("+") and not l.startswith("+++"))
-             base = "(patch)"
--        # the kernel's side: where the drivers are kept (xnu/files/ until they moved to drivers/<subsystem>/) and the Linux layer
--        if f.startswith(("xnu/", "drivers/", "wifi/lx/src/")):
-+        # the kernel's side: where the drivers are kept (xnu/files/ until they moved to drivers/<subsystem>/), the Linux
-+        # layer, and the drivers of the SoC and device repositories (devices/<name>/drivers/, socs/<name>/drivers/)
-+        if f.startswith(("xnu/", "drivers/", "wifi/lx/src/", "devices/", "socs/")):
-             for m in KERNEL.finditer(text):
-                 found[m.group(1)]["kernel"].add(base)
-             for m in STRING.finditer(text):
-diff --git a/tools/hakios-config.py b/tools/hakios-config.py
-index 68decaa..6c41c62 100755
---- a/tools/hakios-config.py
-+++ b/tools/hakios-config.py
-@@ -279,8 +279,10 @@ def load_drivers(root):
-                 else:
-                     raise ConfigError("%s: want file PATH, requires NAME..., default y|n or help TEXT, got %r" % (where, line.strip()))
-             for f in files:
--                if not f.startswith(("bsd/dev/hakios.", "iokit/Kernel/hakios.")) or not f.endswith((".c", ".cpp")):
--                    raise ConfigError("%s: %s is not a hakios.*.c or .cpp of bsd/dev/ or iokit/Kernel/" % (where, f))
-+                if not f.startswith(("bsd/dev/hakios.", "iokit/Kernel/hakios.")) or not f.endswith((".c", ".cpp", ".h", ".inc")):
-+                    raise ConfigError("%s: %s is not a hakios.* .c/.cpp/.h/.inc of bsd/dev/ or iokit/Kernel/" % (where, f))
-+                if not f.endswith((".c", ".cpp")):
-+                    continue        # a header or an #include'd .inc rides with its driver: copied, never a compile unit
-                 if f in seen_files:
-                     raise ConfigError("%s: %s is already built by %s" % (where, f, seen_files[f]))
-                 seen_files[f] = where
-@@ -895,6 +897,8 @@ def files_block(component):
-             lines.append("%-40s %s" % (path, "optional " + " ".join(tags) if tags else "standard"))
-     for d in DRIVERS:
-         for path, tags in d.files:
-+            if not path.endswith((".c", ".cpp")):
-+                continue        # headers and #include'd .inc files ride with their driver; they are not compiled
-             if path.startswith(component + "/"):
-                 lines.append("%-40s optional %s" % (path, " ".join([d.tag] + tags)))
-     return lines + [FILES_END]
-diff --git a/xnu/files/bsd/sys/hakios.input.h b/xnu/files/bsd/sys/hakios.input.h
-index 07125e1..fc879a2 100644
---- a/xnu/files/bsd/sys/hakios.input.h
-+++ b/xnu/files/bsd/sys/hakios.input.h
-@@ -41,6 +41,7 @@ void hakios_touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y);
- void hakios_input_init(void);
- void hakios_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio pointer and keyboard */
- void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
-+void hakios_dodge_touch_init(void);    /* boot-arg synaptics=1: the OnePlus 13's Synaptics S3910 (a device driver of devices/dodge) */
- void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
- void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
- void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
+ 				if (core < 0 || core >= plat->cores || mpidr == this_mpidr) {
+@@ -3235,7 +3453,8 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	dt_begin(&w, "gic");
+ 	dt_prop_str(&w, "device_type", "interrupt-controller");
+ 	dt_prop_str(&w, "compatible", "arm,gic-v3");
+-	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
++	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000,
++	    plat->gic_redist - plat->io_base, plat->gic_redist_size != 0 ? plat->gic_redist_size : 0x100000 };
+ 	dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+ 	dt_end(&w);
+ 	if (plat->uart != 0) {
+@@ -3932,6 +4151,8 @@ efi_main(efi_handle image, efi_system_table *st)
+ 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
+ 		if (SCREEN.base == 0xE1000000ULL) {
+ 			PLAT = &platform_redwood;
++		} else if (SCREEN.base == 0xFC800000ULL) {
++			PLAT = &platform_dodge;
+ 		} else {
+ 			ramfb_phone_screen();
+ 		}

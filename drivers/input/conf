@@ -1,8 +1,12 @@
 # devices/dodge/drivers/input/conf: the input drivers of this phone (docs/drivers-config.md).
 # CONFIG_HAKIOS_<NAME>=y in configs/dodge_defconfig builds one in; tools/hakios-config.py reads this file.
+# The `file` lines are also what the legacy build follows: the file next to this conf is copied
+# to that path in the XNU tree (the .github workflow does it; the names are the tree's own).
 
 driver DODGE_TOUCH
 	file    bsd/dev/hakios.dodge_touch.c
+	file    bsd/dev/hakios.dodge_touch_hw.h
+	file    bsd/dev/hakios.dodge_touch_report.h
 	help    the touch screen: a Synaptics S3910 on bit-banged GPIO SPI, TouchCom (synaptics=1). The
 	help    bus, the power chain (PM8550VS GPIO3 through the SPMI write side, ldo.b4 through the RSC)
 	help    and the pins are the OnePlus 13's

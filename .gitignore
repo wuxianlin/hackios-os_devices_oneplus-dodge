@@ -5,3 +5,4 @@ __pycache__/
 *.bin
 *.efi
 usb-payload.bin
+!fw-gpu/**

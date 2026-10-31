@@ -1,0 +1,3256 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index be702e2..b5b7e6d 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -112,6 +112,24 @@ bsd/dev/monotonic.c optional monotonic
+ bsd/dev/hakios.input.c		standard
+ bsd/dev/hakios.virtio_input.c	standard
+ bsd/dev/hakios.goodix.c	standard
++bsd/dev/hakios.dodge_touch.c	standard
++bsd/dev/hakios.wcn.c	standard
++bsd/dev/adreno8.c		standard
++bsd/dev/redwood_gpu_dispatch.c		standard
++bsd/dev/adreno8_clock.c		standard
++bsd/dev/adreno8_rpmh.c		standard
++bsd/dev/adreno8_cx.c		standard
++bsd/dev/adreno8_gmu.c		standard
++bsd/dev/adreno8_smmu.c		standard
++bsd/dev/adreno8_translation.c		standard
++bsd/dev/adreno8_hfi.c		standard
++bsd/dev/adreno8_memory.c		standard
++bsd/dev/adreno8_hwsched.c		standard
++bsd/dev/adreno8_gpu.c		standard
++bsd/dev/adreno8_context.c		standard
++bsd/dev/adreno8_bo.c		standard
++bsd/dev/adreno8_zap.c		standard
++bsd/dev/adreno8_secure.c		standard
+ bsd/dev/hakios.buttons.c	standard
+ bsd/dev/hakios.battery.c	standard
+ bsd/dev/hakios.ufs.c	standard
+@@ -122,7 +140,7 @@ bsd/dev/hakios.cell.c		standard
+ bsd/dev/hakios.virtio_net.c	standard
+ bsd/dev/hakios.apple80211.c	standard
+ bsd/dev/hakios.cpufreq.c	standard
+-bsd/dev/hakios.adreno.c	standard
++bsd/dev/redwood_adreno.c		standard
+ bsd/dev/hakios.audio.c		standard
+ bsd/dev/hakios.virtio_sound.c	standard
+ bsd/dev/hakios.speaker.c	standard
+diff --git a/bsd/dev/hakios.adsp.c b/bsd/dev/hakios.adsp.c
+index 92f34d6..928a4ad 100644
+--- a/bsd/dev/hakios.adsp.c
++++ b/bsd/dev/hakios.adsp.c
+@@ -98,6 +98,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
+ extern uint64_t kvtophys(vm_offset_t va);
+ extern void loader_return(void);
+@@ -287,8 +288,15 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value)
+ 
+ /* ---- the shared memory (hakios.wifi.c, step 1) --------------------------------------------------- */
+ 
+-#define SMEM_PHYS               0x80900000UL
+-#define SMEM_SIZE               0x00200000u
++#define SMEM_PHYS_DEFAULT       0x80900000UL
++#define SMEM_SIZE_DEFAULT       0x00200000u
++/* another phone's shared memory by boot-args (the OnePlus 13's is 0x81d00000 per
++ * its UEFI memory map -- the SMEM entry; the Android device tree's address for
++ * the HLOS VM does not apply to this chain) */
++static uint64_t smem_phys = SMEM_PHYS_DEFAULT;
++static uint32_t smem_size = SMEM_SIZE_DEFAULT;
++#define SMEM_PHYS               smem_phys
++#define SMEM_SIZE               smem_size
+ #define SMEM_US                 0
+ #define SMEM_ADSP               2               /* dt: qcom,remote-pid of qcom,smp2p-adsp and qcom,glink/adsp */
+ #define SMEM_GLOBAL             0xfffe
+@@ -327,33 +335,68 @@ struct smem_item {
+ #define ITEM_SMP2P_THEIRS       443
+ #define ITEM_CRASH_REASON       423
+ 
+-static const volatile uint8_t *smem;
++/* The shared memory maps page by page: one mapping of the whole region aborts
++ * partway in (this kernel, this phone), a page at a time reads everywhere --
++ * the $TOC at the region's end included. The last page stays mapped: the reads
++ * of a partition walk forward through it. */
++static uintptr_t smem_page_va;
++static uint64_t smem_page_phys;
+ 
+ static bool
+ smem_peek(uint64_t offset, void *to, uint32_t size)
+ {
+-	if (smem == NULL) {
+-		smem = (const volatile uint8_t *)ml_io_map_unmappable(SMEM_PHYS, SMEM_SIZE, VM_WIMG_WCOMB);
+-	}
+ 	if (offset + size > SMEM_SIZE) {
+ 		return false;
+ 	}
+-	for (uint32_t i = 0; i < size; i++) {
+-		((uint8_t *)to)[i] = smem[offset + i];
++	for (uint32_t done = 0; done < size; ) {
++		uint64_t at = offset + done;
++		uint64_t page = SMEM_PHYS + (at & ~(uint64_t)0xfff);
++
++		if (page != smem_page_phys) {
++			smem_page_va = (uintptr_t)ml_io_map(page, 0x1000);
++			smem_page_phys = page;
++			if (smem_page_va == 0) return false;
++		}
++		uint32_t n = 0x1000 - (uint32_t)(at & 0xfff);
++
++		if (n > size - done) n = size - done;
++		for (uint32_t i = 0; i < n; i++) ((uint8_t *)to)[done + i] = *(volatile uint8_t *)(smem_page_va + (at & 0xfff) + i);
++		done += n;
+ 	}
+ 	return true;
+ }
+ 
++/* Direct byte access for the queues, which sit in one partition (pages above). */
++static volatile uint8_t *
++smem_at(uint32_t offset)
++{
++	if (smem_page_phys != SMEM_PHYS + (offset & ~(uint32_t)0xfff)) {
++		smem_page_va = (uintptr_t)ml_io_map(SMEM_PHYS + (offset & ~(uint32_t)0xfff), 0x1000);
++		smem_page_phys = SMEM_PHYS + (offset & ~(uint32_t)0xfff);
++	}
++	return (volatile uint8_t *)(smem_page_va + (offset & 0xfff));
++}
++
+ static void
+ smem_poke(uint32_t offset, uint32_t value)
+ {
+-	wr((vm_offset_t)smem + offset, value);
++	/* a read of one byte at the offset maps the page (peek with size 0
++	 * would not enter its loop and map nothing) */
++	uint8_t scratch;
++
++	(void)smem_peek(offset, &scratch, 1);
++	if (smem_page_phys == SMEM_PHYS + (offset & ~(uint32_t)0xfff)) {
++		wr(smem_page_va + (offset & 0xfff), value);
++	}
+ }
+ 
+ static uint32_t
+ smem_word(uint32_t offset)
+ {
+-	return rd((vm_offset_t)smem + offset);
++	uint32_t v = 0;
++
++	(void)smem_peek(offset, &v, 4);
++	return v;
+ }
+ 
+ static uint32_t
+@@ -363,8 +406,36 @@ smem_partition(uint16_t one, uint16_t other, uint32_t *cacheline, uint32_t *size
+ 	struct smem_table_entry entry;
+ 	struct smem_partition header;
+ 
+-	if (!smem_peek(SMEM_SIZE - 0x1000, &table, sizeof(table)) || memcmp(table.magic, "$TOC", 4) != 0 || table.version != 1 ||
+-	    table.count > 64) {
++	if (!smem_peek(SMEM_SIZE - 0x1000, &table, sizeof(table))) {
++		printf("adsp: smem: the TOC read failed\n");
++		return 0;
++	}
++	if (memcmp(table.magic, "$TOC", 4) != 0 || table.version != 1 || table.count > 64) {
++		/* no TOC where it should be (this VM can read only part of the shared
++		 * memory): scan what we CAN read for the partition header itself -- its
++		 * magic "$PRT" and its two hosts. The first hit wins; a partition that
++		 * lies past the readable window aborts this kernel, so the scan stops
++		 * where the probe said reading ends (boot-arg adsp_smem_size, which on
++		 * such a phone is the READABLE size, not the TOC's) */
++		static bool scanned;
++
++		if (!scanned) {
++			scanned = true;
++			printf("adsp: smem: no TOC at %#llx; scanning the readable %#x for a partition of %u and %u\n",
++			    (uint64_t)(SMEM_SIZE - 0x1000), SMEM_SIZE, one, other);
++			for (uint32_t off = 0; off + sizeof(header) <= SMEM_SIZE; off += 0x1000) {
++				if (!smem_peek(off, &header, sizeof(header)) || memcmp(header.magic, "$PRT", 4) != 0) {
++					continue;
++				}
++				printf("adsp: smem: $PRT at +%#x: hosts %u and %u, size %#x\n",
++				    off, header.host0, header.host1, header.size);
++				if ((header.host0 == one && header.host1 == other) || (header.host0 == other && header.host1 == one)) {
++					*cacheline = 64;
++					*size = header.size;
++					return off;
++				}
++			}
++		}
+ 		return 0;
+ 	}
+ 	for (uint32_t i = 0; i < table.count; i++) {
+@@ -783,7 +854,11 @@ out:
+  * the list of its levels that the boot loader's command database keeps (cmd-db.c), the first
+  * position at or above the level wanted.
+  */
+-#define CMD_DB_PHYS             0x80860000UL
++#define CMD_DB_PHYS_DEFAULT     0x80860000UL
++/* (the OnePlus 13's AOP command database is at 0x81c60000 per its device tree:
++ * aop_cmd_db_region -- 0x80860000 is another phone's and reading it aborts) */
++static uint64_t cmd_db_phys = CMD_DB_PHYS_DEFAULT;
++#define CMD_DB_PHYS             cmd_db_phys
+ #define CMD_DB_SIZE             0x20000UL
+ 
+ struct cmd_db_slave {
+@@ -806,15 +881,21 @@ struct cmd_db_entry {
+ static const struct cmd_db_header *cmd_db;
+ 
+ static struct block rsc = { "rsc", 0x18220000, 0x10000 };
++/* the sequencer's registers come in two layouts.  Version 3 (this phone's,
++ * SM8750: a message id at 0x34, a command every 24 bytes, control at 0x24) and
++ * the older one (0x30, every 20 bytes, 0x14) -- the boot arguments choose; the
++ * wrong layout writes another register than the one meant. */
++static bool rsc_v3 = true;     /* this phone's sequencer is version 3 (adsp_rsc_v2=1: the old one) */
+ #define RSC_TCS_BASE            0xd00
++#define RSC_IRQ_ENABLE          (RSC_TCS_BASE + 0x00)
+ #define RSC_IRQ_STATUS          (RSC_TCS_BASE + 0x04)   /* a bit per TCS: done */
+ #define RSC_IRQ_CLEAR           (RSC_TCS_BASE + 0x08)
+ #define RSC_TCS(n)              (RSC_TCS_BASE + 672 * (n))
+-#define TCS_WAIT_FOR_DONE       0x10
+-#define TCS_CONTROL             0x14
+-#define TCS_STATUS              0x18                    /* not zero: idle */
+-#define TCS_ENABLED             0x1c
+-#define TCS_COMMAND(c)          (0x30 + 20 * (c))       /* message id, address, value, status */
++#define TCS_WAIT_FOR_DONE       (rsc_v3 ? 0x20 : 0x10)
++#define TCS_CONTROL             (rsc_v3 ? 0x24 : 0x14)
++#define TCS_STATUS              (rsc_v3 ? 0x28 : 0x18)  /* not zero: idle */
++#define TCS_ENABLED             (rsc_v3 ? 0x2c : 0x1c)
++#define TCS_COMMAND(c)          ((rsc_v3 ? 0x34 : 0x30) + (rsc_v3 ? 24 : 20) * (c))       /* message id, address, value */
+ #define TCS_ACTIVE_MODE         (1u << 16)
+ #define TCS_TRIGGER             (1u << 24)
+ #define MSGID_WRITE_WAITED      (8u | 1u << 8 | 1u << 16)       /* four bytes, an answer wanted, a write */
+@@ -876,6 +957,157 @@ rail_position(const char *name, uint32_t level, uint32_t *address)
+ 	return -1;
+ }
+ 
++/* One resource of the command database, voted at the first level it has that is
++ * at least the one asked for (the sequencer's clock "xo.lvl", on at 3, is what
++ * the audio DSP runs from -- Linux's bi_tcxo, enabled before the DSP is asked
++ * for).  True: RPMh has said done. */
++static bool
++resource_vote(const char *name, uint32_t value)
++{
++	uint32_t address = 0;
++
++	/* (the value is written as it is given: Linux's clk-rpmh writes its .res_on
++	 * -- 0x3 for the sequencer's bi_tcxo ("xo.lvl") -- while a POSITION is what
++	 * the regulator ARC resources take; mixing the two puts a clock or a rail
++	 * on a level nobody asked for) */
++	if (rail_position(name, value, &address) < 0 || address == 0) {
++		printf("adsp: %u: RPMh has no \"%s\": it is not voted for\n", step, name);
++		return false;
++	}
++	need(&rsc);
++	lck_mtx_lock(&hakios_rsc_lock);
++	unsigned slot = UINT_MAX;
++	uint32_t saved[3], saved_wait = 0, saved_control = 0, saved_irq = 0, done = 0;
++	uint64_t began;
++
++	for (unsigned n = 0; n < 3; n++) {
++		if (rd(rsc.base + RSC_TCS(n) + TCS_STATUS) != 0 && (rd(rsc.base + RSC_TCS(n) + TCS_CONTROL) & TCS_TRIGGER) == 0 &&
++		    rd(rsc.base + RSC_TCS(n) + TCS_ENABLED) == 0) {
++			slot = n;
++			break;
++		}
++	}
++	if (slot == UINT_MAX) {
++		printf("adsp: %u: no idle TCS for %s: it is not voted for\n", step, name);
++		lck_mtx_unlock(&hakios_rsc_lock);
++		return false;
++	}
++	printf("adsp: %u: about to ask RPMh, through TCS %u, for %s (%#x) = %u\n", step, slot, name, address, value);
++	saved_wait = rd(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE);
++	saved_control = rd(rsc.base + RSC_TCS(slot) + TCS_CONTROL);
++	saved_irq = rd(rsc.base + RSC_IRQ_ENABLE);
++	for (unsigned w = 0; w < 3; w++) {
++		saved[w] = rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4 * w);
++	}
++	wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++	wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0), MSGID_WRITE_WAITED);
++	wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4, address);
++	wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 8, value);
++	wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, 1);
++	wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 1);
++	wr(rsc.base + RSC_IRQ_ENABLE, saved_irq | (1u << slot));
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE);
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE | TCS_TRIGGER);
++	began = now_us();
++	while (now_us() - began < 100000) {
++		done = rd(rsc.base + RSC_IRQ_STATUS) & (1u << slot);
++		if (done) {
++			break;
++		}
++		sleep_us(50);
++	}
++	printf("adsp: %u: RPMh %s for %s after %llu us\n", step, done ? "HAS DONE IT" : "HAS NOT SAID DONE", name,
++	    now_us() - began);
++	wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, saved_control & ~TCS_TRIGGER);
++	wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, saved_wait);
++	wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 0);
++	wr(rsc.base + RSC_IRQ_ENABLE, saved_irq);
++	for (unsigned w = 0; w < 3; w++) {
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4 * w, saved[w]);
++	}
++	lck_mtx_unlock(&hakios_rsc_lock);
++	return done != 0;
++}
++
++/* One vote to a Bus Clock Manager, as Linux's bcm-voter sends it: a single
++ * command whose data carries vote_x (the average, bits 27:14) and vote_y (the
++ * peak, bits 13:0), each capped at 14 bits, with the valid and commit bits --
++ * the commit is what makes the RPM apply it.  True: RPMh has said done. */
++static bool
++bcm_vote(const char *name, uint32_t vote_x, uint32_t vote_y)
++{
++	uint32_t address = 0;
++	const uint32_t data = (1u << 30) | (1u << 29) | ((vote_x & 0x3fffu) << 14) | (vote_y & 0x3fffu);
++
++	if (rail_position(name, 0, &address) < 0 || address == 0) {
++		printf("adsp: %u: RPMh has no bus clock manager \"%s\"\n", step, name);
++		return false;
++	}
++	printf("adsp: %u: about to ask RPMh, through the sequencer, for %s (%#x) = avg %u peak %u\n", step, name, address, vote_x, vote_y);
++	/* (the one command is written and triggered by resource_vote's path --
++	 * reusing it with a raw data word) */
++	{
++		vm_offset_t w;
++		uint32_t done = 0, saved[3], saved_wait, saved_control, saved_irq;
++		uint64_t began;
++		uint64_t interval;
++
++		need(&rsc);
++		lck_mtx_lock(&hakios_rsc_lock);
++		unsigned slot = UINT_MAX;
++
++		for (unsigned n = 0; n < 3; n++) {
++			if (rd(rsc.base + RSC_TCS(n) + TCS_STATUS) != 0 && (rd(rsc.base + RSC_TCS(n) + TCS_CONTROL) & TCS_TRIGGER) == 0 &&
++			    rd(rsc.base + RSC_TCS(n) + TCS_ENABLED) == 0) {
++				slot = n;
++				break;
++			}
++		}
++		if (slot == UINT_MAX) {
++			printf("adsp: %u: no idle TCS for %s: not voted\n", step, name);
++			lck_mtx_unlock(&hakios_rsc_lock);
++			return false;
++		}
++		saved_wait = rd(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE);
++		saved_control = rd(rsc.base + RSC_TCS(slot) + TCS_CONTROL);
++		saved_irq = rd(rsc.base + RSC_IRQ_ENABLE);
++		for (unsigned w2 = 0; w2 < 3; w2++) {
++			saved[w2] = rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4 * w2);
++		}
++		wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0), MSGID_WRITE_WAITED);
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4, address);
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 8, data);
++		wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, 1);
++		wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 1);
++		wr(rsc.base + RSC_IRQ_ENABLE, saved_irq | (1u << slot));
++		wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE);
++		wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE | TCS_TRIGGER);
++		nanoseconds_to_absolutetime(10000 * (uint64_t)NSEC_PER_USEC, &interval);
++		began = mach_absolute_time();
++		do {
++			done = rd(rsc.base + RSC_IRQ_STATUS) & (1u << slot);
++			w = rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 12);
++			if (done) {
++				break;
++			}
++		} while (mach_absolute_time() - began < interval);
++		printf("adsp: %u: RPMh %s for %s after %llu us (the command's status %#x)\n", step,
++		    done ? "HAS DONE IT" : "HAS NOT SAID DONE", name, (mach_absolute_time() - began) / 24, w);
++		wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++		wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, saved_control & ~TCS_TRIGGER);
++		wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, saved_wait);
++		wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 0);
++		wr(rsc.base + RSC_IRQ_ENABLE, saved_irq);
++		for (unsigned w2 = 0; w2 < 3; w2++) {
++			wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 4 * w2, saved[w2]);
++		}
++		lck_mtx_unlock(&hakios_rsc_lock);
++		return done != 0;
++	}
++}
++
+ /* The two rails at that level (Linux's proxy request), or given back (level 0). True: RPMh has said done. */
+ static bool
+ rails(uint32_t level)
+@@ -898,43 +1130,69 @@ rails(uint32_t level)
+ 	}
+ 	need(&rsc);
+ 	lck_mtx_lock(&hakios_rsc_lock);
+-	/* (the boot loader leaves the trigger set after its last request, done: idle is what the status says) */
+-	if (rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_STATUS) == 0) {
+-		printf("adsp: %u: TCS %u of the sequencer is busy (status %#x, control %#x): the rails are not asked\n", step, RPMH_TCS,
+-		    rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_STATUS), rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL));
++	/* (an idle ACTIVE slot is looked for among the first three, as the touch's
++	 * power votes do on this phone -- a fixed slot can be a sleep one, which
++	 * sends nothing; what the slot held is put back after the ask) */
++	unsigned slot = UINT_MAX;
++	uint32_t saved[2][3];
++	uint32_t saved_wait = 0, saved_control = 0, saved_irq = 0;
++
++	for (unsigned n = 0; n < 3; n++) {
++		if (rd(rsc.base + RSC_TCS(n) + TCS_STATUS) != 0 && (rd(rsc.base + RSC_TCS(n) + TCS_CONTROL) & TCS_TRIGGER) == 0 &&
++		    rd(rsc.base + RSC_TCS(n) + TCS_ENABLED) == 0) {
++			slot = n;
++			break;
++		}
++	}
++	if (slot == UINT_MAX) {
++		printf("adsp: %u: no idle slot among the sequencer's first three TCS: the rails are not asked\n", step);
+ 		lck_mtx_unlock(&hakios_rsc_lock);
+ 		return false;
+ 	}
+ 	printf("adsp: %u: about to ask RPMh, through TCS %u, for lcx.lvl (%#x) = %u and lmx.lvl (%#x) = %u (level %u%s)\n", step,
+-	    RPMH_TCS, addresses[0], values[0], addresses[1], values[1], level, level == 0 ? ": given back" : "");
++	    slot, addresses[0], values[0], addresses[1], values[1], level, level == 0 ? ": given back" : "");
+ 	snprintf(last_write, sizeof(last_write), "step %u asked RPMh for the audio DSP's rails at level %u", step, level);
+ 	hold();
+-	wr(rsc.base + RSC_IRQ_CLEAR, 1u << RPMH_TCS);
++	saved_wait = rd(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE);
++	saved_control = rd(rsc.base + RSC_TCS(slot) + TCS_CONTROL);
++	saved_irq = rd(rsc.base + RSC_IRQ_ENABLE);
+ 	for (unsigned r = 0; r < 2; r++) {
+-		wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_COMMAND(r), MSGID_WRITE_WAITED);
+-		wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_COMMAND(r) + 4, addresses[r]);
+-		wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_COMMAND(r) + 8, values[r]);
++		for (unsigned w = 0; w < 3; w++) {
++			saved[r][w] = rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(r) + 4 * w);
++		}
+ 	}
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_WAIT_FOR_DONE, 3);
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_ENABLED, 3);
+-	settle();
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL, rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL) & ~TCS_TRIGGER);
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL, rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL) | TCS_ACTIVE_MODE);
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL, rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL) | TCS_TRIGGER);
++	wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++	for (unsigned r = 0; r < 2; r++) {
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(r), MSGID_WRITE_WAITED);
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(r) + 4, addresses[r]);
++		wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(r) + 8, values[r]);
++	}
++	wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, 3);
++	wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 3);
++	wr(rsc.base + RSC_IRQ_ENABLE, rd(rsc.base + RSC_IRQ_ENABLE) | (1u << slot));
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE);
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, TCS_ACTIVE_MODE | TCS_TRIGGER);
+ 	began = now_us();
+ 	while (now_us() - began < 100000) {
+-		done = rd(rsc.base + RSC_IRQ_STATUS) & (1u << RPMH_TCS);
++		done = rd(rsc.base + RSC_IRQ_STATUS) & (1u << slot);
+ 		if (done) {
+ 			break;
+ 		}
+ 		sleep_us(50);
+ 	}
+ 	printf("adsp: %u: RPMh %s after %llu us; the commands' status %#x %#x, the TCS's %#x\n", step, done ? "HAS DONE IT" :
+-	    "HAS NOT SAID DONE", now_us() - began, rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_COMMAND(0) + 12),
+-	    rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_COMMAND(1) + 12), rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_STATUS));
+-	wr(rsc.base + RSC_IRQ_CLEAR, 1u << RPMH_TCS);
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL, rd(rsc.base + RSC_TCS(RPMH_TCS) + TCS_CONTROL) & ~(TCS_TRIGGER | TCS_ACTIVE_MODE));
+-	wr(rsc.base + RSC_TCS(RPMH_TCS) + TCS_ENABLED, 0);
++	    "HAS NOT SAID DONE", now_us() - began, rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(0) + 12),
++	    rd(rsc.base + RSC_TCS(slot) + TCS_COMMAND(1) + 12), rd(rsc.base + RSC_TCS(slot) + TCS_STATUS));
++	wr(rsc.base + RSC_IRQ_CLEAR, 1u << slot);
++	wr(rsc.base + RSC_TCS(slot) + TCS_CONTROL, saved_control & ~TCS_TRIGGER);
++	wr(rsc.base + RSC_TCS(slot) + TCS_WAIT_FOR_DONE, saved_wait);
++	wr(rsc.base + RSC_TCS(slot) + TCS_ENABLED, 0);
++	wr(rsc.base + RSC_IRQ_ENABLE, saved_irq);
++	for (unsigned r = 0; r < 2; r++) {
++		for (unsigned w = 0; w < 3; w++) {
++			wr(rsc.base + RSC_TCS(slot) + TCS_COMMAND(r) + 4 * w, saved[r][w]);
++		}
++	}
+ 	lck_mtx_unlock(&hakios_rsc_lock);
+ 	return done != 0;
+ }
+@@ -965,9 +1223,73 @@ step_survey(void)
+ 
+ /* ---- step 2: the firmware -------------------------------------------------------------------------- */
+ 
+-#define ADSP_MEMORY             0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
+-#define ADSP_MEMORY_SIZE        0x04000000u
++#define ADSP_MEMORY_DEFAULT     0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
++#define ADSP_MEMORY_SIZE_DEFAULT 0x04000000u
++/* another phone's audio DSP memory by boot-args (the OnePlus 13's is the
++ * adspslpi_region of its device tree: 0x9ee00000, 80.5 MB) */
++static bool skip_mailbox;  /* adsp_nomailbox=1: the mailbox/IPCC path hangs this kernel */
++static bool no_ipcc;       /* adsp_noipcc=1: no IPCC doorbell enables (an unhandled interrupt storm) */
++static bool gic_mask;      /* adsp_gicmask=1: the doorbells' lines off at the GIC (unproven spare) */
++static bool bw_vote;       /* adsp_bw=1: the DDR bus clock manager voted to maximum first */
++static uint32_t watchdog_seconds;   /* adsp_watchdog=N: the APSS watchdog bites N s after its last pet */
++
++/* The APSS watchdog (dt: watchdog@16410000, the sleep clock): pet by writing 1
++ * at +4, enable at +8, the bark and bite times at +0x10 and +0x14 in ticks of
++ * 32765 Hz. Linux's qcom_soc_wdt arms it the same way. */
++static struct block apss_watchdog = { "watchdog", 0x16410000, 0x1000 };
++#define WDT_PET         0x04
++#define WDT_EN          0x08
++#define WDT_BARK_TIME   0x10
++#define WDT_BITE_TIME   0x14
++#define WDT_HZ          32765
++
++static void
++watchdog_disarm(void)
++{
++	if (watchdog_seconds == 0 || apss_watchdog.base == 0) {
++		return;
++	}
++	wr(apss_watchdog.base + WDT_EN, 0);
++	printf("adsp: the watchdog is disarmed\n");
++}
++
++static void
++watchdog_pet(void)
++{
++	if (watchdog_seconds == 0 || apss_watchdog.base == 0) {
++		return;
++	}
++	wr(apss_watchdog.base + WDT_PET, 1);
++}
++
++static void
++watchdog_thread(void *unused, wait_result_t wait)
++{
++#pragma unused(unused, wait)
++	while (watchdog_seconds != 0) {
++		for (uint32_t slept = 0; slept < watchdog_seconds * 1000 / 3; slept += 100) {
++			sleep_ms(100);
++			if (watchdog_seconds == 0) {
++				return;
++			}
++		}
++		watchdog_pet();
++	}
++}
++static uint64_t adsp_memory = ADSP_MEMORY_DEFAULT;
++static uint32_t adsp_memory_size = ADSP_MEMORY_SIZE_DEFAULT;
++static uint32_t adsp_pas_size = 0;                /* adsp_pas_size= overrides; by default the
++                                * parsed image's own span goes to TrustZone (Linux's max-min) */
++#define ADSP_MEMORY             adsp_memory
++#define ADSP_MEMORY_SIZE        adsp_memory_size
+ #define PAS_ADSP                1               /* dt: qcom,pas-id */
++/* SM8750 (Linux's sun_adsp_resource): the DSP's device tree is a second signed
++ * image, of its own PAS id, into q6_adsp_dtb_region, started before the DSP. */
++#define PAS_ADSP_DTB            0x24
++static uint64_t adsp_dtb_memory = 0x9ed80000UL;   /* dt: q6_adsp_dtb_region */
++static uint32_t pas_id = PAS_ADSP;                /* adsp_pas= (the CDSP is 18) */
++static uint32_t pas_dtb_id = PAS_ADSP_DTB;        /* adsp_dtb_pas= (the CDSP's tree is 0x25) */
++static char fw_prefix[8] = "adsp";                /* adsp_fw= ("cdsp": cdsp.mdt and its kin) */
+ 
+ 
+ /*
+@@ -1060,8 +1382,33 @@ image_file(const char *name, uint64_t *size)
+ }
+ 
+ 
++/* The firmware's name by the boot-arg prefix: "adsp.mdt" by default, "cdsp.mdt"
++ * with adsp_fw=cdsp -- every lookup goes through these two. */
++static const uint8_t *
++fw_file(const char *middle, const char *suffix, uint64_t *size)
++{
++	char name[24];
++
++	snprintf(name, sizeof(name), "%s%s%s", fw_prefix, middle, suffix);
++	return image_file(name, size);
++}
++
++static void
++fw_name(char *to, uint32_t n, const char *fmt, uint32_t i)
++{
++	snprintf(to, n, "%s%s", fw_prefix, fmt);
++	to[n - 1] = 0;
++	/* (the caller's format carries the number; write it after the prefix) */
++	{
++		char tail[16];
++
++		snprintf(tail, sizeof(tail), fmt, i);
++		snprintf(to, n, "%s%s", fw_prefix, tail);
++	}
++}
++
+ #define MDT_HASH(flags)         (((flags) >> 24 & 7) == 2)
+-#define MAX_SEGMENTS            48
++#define MAX_SEGMENTS            64
+ 
+ struct elf_segment {
+ 	uint32_t type, offset, vaddr, paddr, file_size, memory_size, flags, align;
+@@ -1113,7 +1460,7 @@ step_firmware(void)
+ 	announce("find the audio DSP's image in the small image or on the root, and check it against its own header");
+ 	image_forget();
+ 	image.segments = 0;
+-	header = image_file("adsp.mdt", &size);
++	header = fw_file("", ".mdt", &size);
+ 	if (header == NULL) {
+ 		return false;
+ 	}
+@@ -1135,20 +1482,22 @@ step_firmware(void)
+ 		if (segment.type != 1 || MDT_HASH(segment.flags) || segment.memory_size == 0) {
+ 			continue;
+ 		}
+-		if (segment.paddr < ADSP_MEMORY || segment.file_size > segment.memory_size ||
+-		    (uint64_t)segment.paddr + segment.memory_size > (uint64_t)ADSP_MEMORY + ADSP_MEMORY_SIZE) {
+-			printf("adsp: %u: segment %u (%#x, %#x bytes) is not within the DSP's memory\n", step, i, segment.paddr,
++		/* (the segments are relocatable: Linux puts each at paddr - lowest
++		 * within the region -- the addresses they are linked at are not where
++		 * they go, and TrustZone's check expects the lower placement) */
++		if (segment.file_size > segment.memory_size) {
++			printf("adsp: %u: segment %u's file (%#x) is longer than it (%#x)\n", step, i, segment.file_size,
+ 			    segment.memory_size);
+ 			goto fail;
+ 		}
+-		image.segment[image.segments].at = segment.paddr - ADSP_MEMORY;
++		image.segment[image.segments].at = segment.paddr;
+ 		image.segment[image.segments].file_size = segment.file_size;
+ 		image.segment[image.segments].memory_size = segment.memory_size;
+ 		image.segment[image.segments].file = NULL;
+ 		if (segment.file_size != 0) {
+ 			uint64_t file_size = 0;
+ 
+-			snprintf(name, sizeof(name), "adsp.b%02u", i);
++			fw_name(name, sizeof(name), ".b%02u", i);
+ 			image.segment[image.segments].file = image_file(name, &file_size);
+ 			if (image.segment[image.segments].file == NULL) {
+ 				goto fail;
+@@ -1164,14 +1513,22 @@ step_firmware(void)
+ 		highest = segment.paddr + segment.memory_size > highest ? segment.paddr + segment.memory_size : highest;
+ 		image.segments++;
+ 	}
+-	if (image.segments == 0 || lowest != ADSP_MEMORY || 52 + 32 * count + (uint64_t)hashes != size) {
++	if (image.segments == 0 || 52 + 32 * count + (uint64_t)hashes != size) {
+ 		printf("adsp: %u: not what TrustZone takes: %u segments to load, the lowest at %#x; the header file has %llu bytes, "
+ 		    "the header %u and the hashes %u\n", step, image.segments, lowest, size, 52 + 32 * count, hashes);
+ 		goto fail;
+ 	}
+ 	image.header = header;
+ 	image.header_size = size;
+-	image.size = ((highest + 0xfff) & ~0xfffu) - ADSP_MEMORY;
++	image.size = ((highest + 0xfff) & ~0xfffu) - lowest;
++	if (image.size > ADSP_MEMORY_SIZE) {
++		printf("adsp: %u: the image (%#llx bytes from %#x) does not fit the DSP's %#x at %#llx\n", step,
++		    (uint64_t)image.size, lowest, ADSP_MEMORY_SIZE, ADSP_MEMORY);
++		goto fail;
++	}
++	for (uint32_t s2 = 0; s2 < image.segments; s2++) {
++		image.segment[s2].at -= lowest;
++	}
+ 	printf("adsp: %u: the image is whole (%s): a header of %llu bytes (%u of hashes), %u segments, %llu bytes of files, %#x "
+ 	    "bytes of the DSP's %#x from %#x\n", step, from_root ? "from /fw on the root" : "from the small image", size, hashes,
+ 	    image.segments, files, image.size, ADSP_MEMORY_SIZE, ADSP_MEMORY);
+@@ -1189,6 +1546,26 @@ step_mailbox(void)
+ {
+ 	bool open;
+ 
++	{
++		uint32_t skip = 0;
++
++		{
++			uint32_t noipcc = 0, mask = 0;
++
++			if (PE_parse_boot_argn("adsp_noipcc", &noipcc, sizeof(noipcc)) && noipcc != 0) no_ipcc = true;
++			if (PE_parse_boot_argn("adsp_gicmask", &mask, sizeof(mask)) && mask != 0) gic_mask = true;
++			{
++				uint32_t bw = 0;
++
++				if (PE_parse_boot_argn("adsp_bw", &bw, sizeof(bw)) && bw != 0) bw_vote = true;
++			}
++		}
++		if (PE_parse_boot_argn("adsp_nomailbox", &skip, sizeof(skip)) && skip) {
++			skip_mailbox = true;
++			printf("adsp: %u: skipped (adsp_nomailbox)\n", step);
++			return true;
++		}
++	}
+ 	announce("open the mailbox to the always-on processor, unless it is open: words of its message memory, and its doorbell");
+ 	lck_mtx_lock(&hakios_aop_mailbox_lock);
+ 	open = mailbox_open();
+@@ -1356,7 +1733,7 @@ dsp_shutdown(const char *why)
+ 		link_stop();
+ 	}
+ 	stopped_by_its_word = dsp_ask_to_stop(leaving ? 2000 : 5000);
+-	result = scm("to shut the audio DSP down", SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_ADSP, 0, 0, &answer);
++	result = scm("to shut the audio DSP down", SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, pas_id, 0, 0, &answer);
+ 	if (result != 0 || answer != 0) {
+ 		printf("adsp: %u: TRUSTZONE DOES NOT SHUT THE AUDIO DSP DOWN: the call returns %d, its answer is %#llx\n", step, result,
+ 		    answer);
+@@ -1403,6 +1780,105 @@ step_header(void)
+ 		printf("adsp: %u: the DSP has left nothing in the shared memory: it has not run since the phone was started\n", step);
+ 	}
+ 
++	/* the DSP's device tree: its own signed image and PAS id (SM8750; without
++	 * it started first, TrustZone does not start the DSP itself) */
++	{
++		const uint8_t *dtb_header, *dtb_file;
++		uint64_t dtb_size = 0, dtb_file_size = 0;
++		struct elf_segment segment;
++		uint32_t dtb_count, dtb_segments = 0, dtb_hash = 0, dtb_lowest = ~0u, dtb_highest = 0;
++		uint32_t dtb_span, dtb_load_index = 0;
++		vm_offset_t page = 0;
++		volatile uint64_t *dtb_map;
++
++		dtb_header = fw_file("_dtb", ".mdt", &dtb_size);
++		if (dtb_header == NULL || dtb_size > PAGE_SIZE) {
++			printf("adsp: %u: the DSP's device tree is not there: the DSP is not asked for\n", step);
++			goto no_tree;
++		}
++		dtb_count = dtb_size >= 52 + 32 ? dtb_header[44] | dtb_header[45] << 8 : 0;
++		if (memcmp(dtb_header, "\177ELF\1", 5) != 0 || dtb_count < 1 || dtb_count > 16 || 52 + 32 * dtb_count > dtb_size) {
++			printf("adsp: %u: fw/adsp_dtb.mdt is not such a header\n", step);
++			goto no_tree;
++		}
++		for (uint32_t i = 0; i < dtb_count; i++) {
++			memcpy(&segment, dtb_header + 52 + 32 * i, sizeof(segment));
++			if (MDT_HASH(segment.flags)) {
++				dtb_hash = segment.file_size;
++				continue;
++			}
++			if (segment.type != 1 || segment.memory_size == 0) {
++				continue;
++			}
++			/* (the segments' addresses are where the DSP's tree is linked, not
++			 * where it is put: all of it goes into the tree's own region) */
++			dtb_lowest = segment.paddr < dtb_lowest ? segment.paddr : dtb_lowest;
++			dtb_highest = segment.paddr + segment.memory_size > dtb_highest ? segment.paddr + segment.memory_size : dtb_highest;
++			if (dtb_segments == 0) {                  /* (the first of them: its file is put below) */
++				char name[16];
++
++				fw_name(name, sizeof(name), "_dtb.b%02u", i);
++				dtb_file = image_file(name, &dtb_file_size);
++				if (dtb_file == NULL || dtb_file_size != segment.file_size) {
++					printf("adsp: %u: fw/%s does not match the tree's header\n", step, name);
++					goto no_tree;
++				}
++				dtb_load_index = i;
++			}
++			dtb_segments++;
++		}
++		if (dtb_segments != 1 || dtb_hash == 0 || 52 + 32 * dtb_count + (uint64_t)dtb_hash != dtb_size) {
++			printf("adsp: %u: the DSP's device tree is not what TrustZone takes (%u segments)\n", step, dtb_segments);
++			goto no_tree;
++		}
++		memcpy(&segment, dtb_header + 52 + 32 * dtb_load_index, sizeof(segment));      /* (the one segment that is loaded) */
++		dtb_span = ((dtb_highest - dtb_lowest) + 0xfff) & ~0xfffu;
++		printf("adsp: %u: the DSP's device tree: %#llx bytes at %#llx (linked at %#x, PAS %u)\n", step, (uint64_t)dtb_span,
++		    adsp_dtb_memory, segment.paddr, PAS_ADSP_DTB);
++		if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			goto no_tree;
++		}
++		memcpy((void *)page, dtb_header, dtb_size);
++		for (vm_offset_t line = page; line < page + PAGE_SIZE; line += 64) {
++			__asm__ volatile ("dc civac, %0" : : "r" (line));
++		}
++		settle();
++		result = scm("to take the tree's header", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, pas_dtb_id, kvtophys(page), 0,
++		    &answer);
++		kmem_free(kernel_map, page, PAGE_SIZE);
++		if (result != 0 || answer != 0) {
++			printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE TREE'S HEADER: %d, %#llx\n", step, result, answer);
++			goto no_tree;
++		}
++		result = scm("where the tree will be", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, pas_dtb_id, adsp_dtb_memory,
++		    (uint64_t)dtb_span, &answer);
++		if (result != 0 || answer != 0) {
++			printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE TREE'S PLACE: %d, %#llx\n", step, result, answer);
++			goto no_tree;
++		}
++		dtb_map = (volatile uint64_t *)ml_io_map_unmappable(adsp_dtb_memory, dtb_span, VM_WIMG_WCOMB);
++		if ((vm_offset_t)dtb_map == 0) {
++			goto no_tree;
++		}
++		memcpy((void *)(uintptr_t)dtb_map, dtb_file, dtb_file_size);
++		for (vm_offset_t line = (vm_offset_t)dtb_map; line < (vm_offset_t)dtb_map + dtb_span; line += 64) {
++			__asm__ volatile ("dc civac, %0" : : "r" (line));
++		}
++		settle();
++		printf("adsp: %u: the DSP's device tree written (%#llx bytes), read back: %#llx\n", step, dtb_file_size,
++		    (uint64_t)*dtb_map);
++		ml_io_unmap((vm_offset_t)dtb_map, dtb_span);
++		result = scm("to authenticate the DSP's device tree and start it", SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, pas_dtb_id,
++		    0, 0, &answer);
++		if (result != 0 || answer != 0) {
++			printf("adsp: %u: TRUSTZONE DOES NOT START THE DSP'S DEVICE TREE: %d, %#llx\n", step, result, answer);
++			goto no_tree;
++		}
++		printf("adsp: %u: TRUSTZONE HAS STARTED THE DSP'S DEVICE TREE\n", step);
++	}
++
++no_tree:
++	;
+ 	announce("hand the image's header to TrustZone to check its signature (image 1), in a page of ours");
+ 	if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("adsp: %u: no memory\n", step);
+@@ -1413,7 +1889,7 @@ step_header(void)
+ 		__asm__ volatile ("dc civac, %0" : : "r" (line));
+ 	}
+ 	settle();
+-	result = scm("to take the audio DSP's header", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, PAS_ADSP, kvtophys(page), 0, &answer);
++	result = scm("to take the audio DSP's header", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, pas_id, kvtophys(page), 0, &answer);
+ 	if (result != 0 || answer != 0) {
+ 		printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE HEADER: the call returns %d, its answer is %#llx\n", step, result, answer);
+ 		return false;
+@@ -1421,7 +1897,8 @@ step_header(void)
+ 	printf("adsp: %u: TRUSTZONE ACCEPTS THE AUDIO DSP'S SIGNATURE FROM THIS KERNEL\n", step);
+ 
+ 	announce("tell TrustZone where the image will be");
+-	result = scm("where the image will be", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, PAS_ADSP, ADSP_MEMORY, image.size, &answer);
++	result = scm("where the image will be", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, pas_id, ADSP_MEMORY,
++	    adsp_pas_size != 0 ? (uint64_t)adsp_pas_size : (uint64_t)image.size, &answer);
+ 	if (result != 0 || answer != 0) {
+ 		printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE PLACE: the call returns %d, its answer is %#llx\n", step, result, answer);
+ 		return false;
+@@ -1462,9 +1939,8 @@ step_image(void)
+ 		volatile uint64_t *to = dsp_memory + image.segment[s].at / 8;
+ 
+ 		if ((image.segment[s].at | image.segment[s].memory_size) & 7) {
+-			printf("adsp: %u: a segment that does not begin and end at a multiple of eight bytes: not written\n", step);
+-			ml_io_unmap((vm_offset_t)dsp_memory, ADSP_MEMORY_SIZE);
+-			return false;
++			printf("adsp: %u: a segment is not eight-byte aligned (at %#llx, %#x) -- writing anyway\n",
++			    step, (uint64_t)image.segment[s].at, image.segment[s].memory_size);
+ 		}
+ 		for (uint32_t i = 0; i < image.segment[s].memory_size; i += 8) {
+ 			to[i / 8] = segment_word(s, i);
+@@ -1646,12 +2122,17 @@ step_start(void)
+ 	have = dsp_words(&last);
+ 	announce("listen for the audio DSP's doorbells, ask RPMh for its rails, tell the always-on processor that its image is "
+ 	    "loaded, and ask TrustZone to authenticate the image and let the DSP out of reset");
+-	need(&ipcc);
+-	for (unsigned i = 0; i < 8 && (rang = rd(ipcc.base + IPCC_RECEIVED)) != IPCC_NOBODY && rang >> 16 == IPCC_LPASS; i++) {
+-		put(&ipcc, "heard", IPCC_CLEAR, rang);
++	need(&ipcc);                        /* (the polling below reads it whatever the enables) */
++	if (!skip_mailbox && !no_ipcc) {
++		for (unsigned i = 0; i < 8 && (rang = rd(ipcc.base + IPCC_RECEIVED)) != IPCC_NOBODY && rang >> 16 == IPCC_LPASS; i++) {
++			put(&ipcc, "heard", IPCC_CLEAR, rang);
++		}
++		/* (adsp_noipcc leaves these out: a DSP that comes up rings its doorbell,
++		 * the IPCC raises an interrupt this kernel does not handle, and the storm
++		 * of it hangs the system -- the doorbells are polled instead) */
++		put(&ipcc, "listened for", IPCC_ENABLE, IPCC_LPASS << 16 | IPCC_SMP2P);
++		put(&ipcc, "listened for", IPCC_ENABLE, IPCC_LPASS << 16 | IPCC_GLINK);
+ 	}
+-	put(&ipcc, "listened for", IPCC_ENABLE, IPCC_LPASS << 16 | IPCC_SMP2P);
+-	put(&ipcc, "listened for", IPCC_ENABLE, IPCC_LPASS << 16 | IPCC_GLINK);
+ 	bzero(&doorbell, sizeof(doorbell));
+ 	lck_mtx_lock(&dsp_lock);
+ 	if (!rails(384)) {
+@@ -1659,24 +2140,104 @@ step_start(void)
+ 		return false;
+ 	}
+ 	rails_asked = true;
+-	if (!mailbox_send("{class: image, res: load_state, name: adsp, val: on}")) {
+-		rails(0);
+-		rails_asked = false;
+-		lck_mtx_unlock(&dsp_lock);
+-		return false;
++	/* the DDR bus clock manager first (Linux's icc_set_bw(UINT_MAX) on the
++	 * rproc_ddr path, twice, before the image is asked for): the audio DSP
++	 * streams its instructions through the LPASS fabric to the DDR from its
++	 * first fetch, and nothing of ours has voted that path anything */
++	if (bw_vote) {
++		/* the LPASS fabric's own manager ("LP0", the rproc_ddr path's source
++		 * nodes) and the DDR one ("MC0", the path's far end) -- the names in
++		 * the command database are upper case */
++		(void)bcm_vote("LP0", 0x3fff, 0x3fff);
++		(void)bcm_vote("SH0", 0x3fff, 0x3fff);
++		(void)bcm_vote("MC0", 0x3fff, 0x3fff);
++	}
++	/* the sequencer's clock the DSP runs from (Linux's clk_prepare_enable(xo):
++	 * bi_tcxo, "xo.lvl" at 3) -- without it out of reset can mean forever */
++	resource_vote("xo.lvl", 3);
++	/* the DSP, as it comes up, rings doorbells the IPCC turns into a level
++	 * interrupt this kernel does not handle, and the storm of one hangs the
++	 * whole system: the phone's bootloader leaves the line enabled, so it is
++	 * turned off here (the doorbells are polled, not caught).  The same for
++	 * the sequencer's own three.  (dt: ipcc 229, rsc 3 4 5; INTID = SPI + 32) */
++	if (gic_mask) {
++		static const uint32_t lines[] = { 229 + 32, 3 + 32, 4 + 32, 5 + 32 };
++		vm_offset_t gicd = ml_io_map(0x16000000UL, 0x10000);
++
++		if (gicd != 0) {
++			for (unsigned i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
++				wr(gicd + 0x180 + 4 * (lines[i] >> 5), 1u << (lines[i] & 31));
++			}
++			printf("adsp: %u: the doorbells' interrupt lines (%#x %#x %#x %#x) are off at the GIC\n", step,
++			    229 + 32, 3 + 32, 4 + 32, 5 + 32);
++			/* (the mapping is left: the platform made the GIC's own permanent,
++			 * and taking this one apart would take that with it) */
++		}
++	}
++	if (!skip_mailbox) {
++		lck_mtx_unlock(&dsp_lock);     /* (held only where it guards, as with the ask below) */
++		bool told = mailbox_send("{class: image, res: load_state, name: adsp, val: on}");
++
++		lck_mtx_lock(&dsp_lock);
++		if (!told) {
++			rails(0);
++			rails_asked = false;
++			lck_mtx_unlock(&dsp_lock);
++			return false;
++		}
++	}
++	/* (Linux's adsp_start: the main image's header is handed over again after
++	 * the tree is started -- the tree's start comes first there, and what was
++	 * handed over before it does not survive) */
++	{
++		vm_offset_t again = 0;
++
++		if (kmem_alloc(kernel_map, &again, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			goto no_dsp;
++		}
++		memcpy((void *)again, image.header, image.header_size);
++		for (vm_offset_t line = again; line < again + PAGE_SIZE; line += 64) {
++			__asm__ volatile ("dc civac, %0" : : "r" (line));
++		}
++		settle();
++		result = scm("to take the audio DSP's header again", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, pas_id, kvtophys(again),
++		    0, &answer);
++		kmem_free(kernel_map, again, PAGE_SIZE);
++		if (result != 0 || answer != 0) {
++			printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE HEADER AGAIN: %d, %#llx\n", step, result, answer);
++			goto no_dsp;
++		}
++		result = scm("where the image will be, again", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, pas_id, ADSP_MEMORY,
++		    adsp_pas_size != 0 ? (uint64_t)adsp_pas_size : (uint64_t)image.size, &answer);
++		if (result != 0 || answer != 0) {
++			printf("adsp: %u: TRUSTZONE DOES NOT TAKE THE PLACE AGAIN: %d, %#llx\n", step, result, answer);
++			goto no_dsp;
++		}
++		printf("adsp: %u: TrustZone takes the header and the place again\n", step);
++	}
++	{
++		uint32_t noauth = 0;
++
++		if (PE_parse_boot_argn("adsp_noauth", &noauth, sizeof(noauth)) && noauth != 0) {
++			printf("adsp: %u: THE ASK TO TRUSTZONE IS SKIPPED (adsp_noauth): everything up to it stands\n", step);
++			lck_mtx_unlock(&dsp_lock);
++			return true;
++		}
+ 	}
+-	result = scm("to authenticate the audio DSP's image and start it", SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_ADSP, 0, 0,
++	/* (the lock is let go of around the ask: should TrustZone never answer, the
++	 * run can still end as its time comes -- the ask's thread is lost, the log
++	 * is not) */
++	printf("adsp: %u: about to ask TrustZone to authenticate and start the audio DSP\n", step);
++	lck_mtx_unlock(&dsp_lock);
++	result = scm("to authenticate the audio DSP's image and start it", SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, pas_id, 0, 0,
+ 	    &answer);
++	lck_mtx_lock(&dsp_lock);
+ 	doorbell.since = started = now_us();
+ 	image_written = false;
+ 	if (result != 0 || answer != 0) {
+ 		printf("adsp: %u: TRUSTZONE DOES NOT START THE AUDIO DSP: the call returns %d, its answer is %#llx\n", step, result,
+ 		    answer);
+-		mailbox_send("{class: image, res: load_state, name: adsp, val: off}");
+-		rails(0);
+-		rails_asked = false;
+-		lck_mtx_unlock(&dsp_lock);
+-		return false;
++		goto no_dsp;
+ 	}
+ 	dsp_started = true;
+ 	lck_mtx_unlock(&dsp_lock);
+@@ -1762,6 +2323,15 @@ step_start(void)
+ 		show_crash_reason();
+ 	}
+ 	return ready_at != 0;
++
++no_dsp:
++	/* (the DSP's rails are given back and the always-on processor told the
++	 * image is not loaded, whatever kept it from starting) */
++	mailbox_send("{class: image, res: load_state, name: adsp, val: off}");
++	rails(0);
++	rails_asked = false;
++	lck_mtx_unlock(&dsp_lock);
++	return false;
+ }
+ 
+ /* ---- GLINK (hakios.wifi.c; items 478 to 480 of our partition with the audio DSP) ------------------- */
+@@ -1904,7 +2474,7 @@ glink_peek(void *to, uint32_t offset, uint32_t count)
+ 	uint32_t at = (smem_word(glink.descriptor + GLINK_THEIR_TAIL) + offset) % glink.theirs_size;
+ 
+ 	for (uint32_t i = 0; i < count; i++) {
+-		((uint8_t *)to)[i] = smem[glink.theirs + (at + i) % glink.theirs_size];
++		((uint8_t *)to)[i] = *smem_at(glink.theirs + (at + i) % glink.theirs_size);
+ 	}
+ }
+ 
+@@ -1929,7 +2499,7 @@ glink_room(void)
+ static bool
+ glink_put(const void *first, uint32_t first_length, const void *second, uint32_t second_length)
+ {
+-	volatile uint8_t *queue = (volatile uint8_t *)(uintptr_t)smem + glink.ours;
++	volatile uint8_t *queue = smem_at(glink.ours + 0);
+ 	uint32_t head = smem_word(glink.descriptor + GLINK_OUR_HEAD), length = first_length + second_length;
+ 	uint32_t padded = (length + 7) & ~7u;
+ 
+@@ -3115,6 +3685,8 @@ steps_over(uint32_t done)
+ void
+ hakios_adsp_stop(void)
+ {
++	leaving = true;                        /* whatever a wedged step holds, the way out does not wait for it */
++	watchdog_disarm();
+ 	battmgr_stop();
+ 	hakios_sound_dsp_down();               /* the amplifiers, the stream and the port first, while the DSP still listens */
+ 	hakios_mic_dsp_down();                 /* and what the microphones' path has asked for */
+@@ -3140,6 +3712,7 @@ hakios_adsp_stop(void)
+ void
+ hakios_adsp_quiesce(void)
+ {
++	watchdog_disarm();                     /* (the way out takes its time: nothing bites on the way) */
+ 	hakios_sound_quiesce();                /* the amplifiers off, whatever the DSP's state */
+ 	if (!dsp_started) {
+ 		return;
+@@ -3199,6 +3772,124 @@ whole_thread(__unused void *parameter, __unused wait_result_t result)
+ void
+ hakios_adsp_init(void)
+ {
++	{
++		/* before any step: the PAS ids and the firmware's name select the
++		 * compute DSP for the cross-check (adsp_fw=cdsp adsp_pas=18
++		 * adsp_dtb_pas=0x25 adsp_mem=0x9d200000 adsp_size=0x1900000
++		 * adsp_dtb=0x9eb00000) */
++		uint32_t pas = 0, dtb_pas = 0;
++
++		if (PE_parse_boot_argn("adsp_pas", &pas, sizeof(pas)) && pas != 0) pas_id = pas;
++		if (PE_parse_boot_argn("adsp_dtb_pas", &dtb_pas, sizeof(dtb_pas)) && dtb_pas != 0) pas_dtb_id = dtb_pas;
++		PE_parse_boot_argn("adsp_fw", fw_prefix, sizeof(fw_prefix));
++	}
++	{
++		uint64_t mem = 0;
++		uint32_t size = 0;
++
++		if (PE_parse_boot_argn("adsp_mem", &mem, sizeof(mem)) && mem != 0) adsp_memory = mem;
++		if (PE_parse_boot_argn("adsp_size", &size, sizeof(size)) && size != 0) adsp_memory_size = size;
++		{
++			uint32_t pas_size = 0;
++
++			if (PE_parse_boot_argn("adsp_pas_size", &pas_size, sizeof(pas_size)) && pas_size != 0) adsp_pas_size = pas_size;
++		}
++		{
++			uint64_t smem = 0;
++			uint32_t ssize = 0;
++
++			if (PE_parse_boot_argn("adsp_smem", &smem, sizeof(smem)) && smem != 0) smem_phys = smem;
++			if (PE_parse_boot_argn("adsp_smem_size", &ssize, sizeof(ssize)) && ssize != 0) smem_size = ssize;
++		{
++			uint32_t wdt = 0;
++
++			/* (NOT armed: this phone's watchdog is the hypervisor's, dt
++			 * /hypervisor/qcom,gh-watchdog -- the APSS registers at 0x16410000
++			 * behind it are not this kernel's to write, and writing one froze
++			 * the whole SoC, loader and all. Kept only to say so.) */
++			if (PE_parse_boot_argn("adsp_watchdog", &wdt, sizeof(wdt)) && wdt != 0 && wdt <= 3600) {
++				printf("adsp: adsp_watchdog is not usable on this phone (the watchdog is the hypervisor's): ignored\n");
++			}
++			if (false) {
++				thread_t thread;
++
++				watchdog_seconds = wdt;
++				need(&apss_watchdog);
++				wr(apss_watchdog.base + WDT_EN, 0);
++				wr(apss_watchdog.base + WDT_BARK_TIME, wdt * WDT_HZ);
++				wr(apss_watchdog.base + WDT_BITE_TIME, wdt * WDT_HZ);
++				watchdog_pet();
++				wr(apss_watchdog.base + WDT_EN, 1);
++				printf("adsp: the watchdog is armed: a wedged system is bitten after %u s\n", wdt);
++				if (kernel_thread_start(watchdog_thread, NULL, &thread) == KERN_SUCCESS) {
++					thread_deallocate(thread);
++				} else {
++					printf("adsp: no petter thread: the watchdog is disarmed again\n");
++					watchdog_disarm();
++					watchdog_seconds = 0;
++				}
++			}
++		}
++		{
++			uint64_t cmddb = 0, rsc_pa = 0, ipcc_pa = 0;
++			uint32_t v2 = 0;
++
++			/* this phone's addresses (another phone's command database aborts):
++			 * adsp_cmddb=0x81c60000 adsp_rsc=0x16520000 adsp_ipcc=0x406000 */
++			if (PE_parse_boot_argn("adsp_cmddb", &cmddb, sizeof(cmddb)) && cmddb != 0) cmd_db_phys = cmddb;
++			if (PE_parse_boot_argn("adsp_rsc", &rsc_pa, sizeof(rsc_pa)) && rsc_pa != 0) rsc.phys = (uint32_t)rsc_pa;
++			if (PE_parse_boot_argn("adsp_ipcc", &ipcc_pa, sizeof(ipcc_pa)) && ipcc_pa != 0) ipcc.phys = (uint32_t)ipcc_pa;
++			{
++				uint64_t dtb = 0;
++
++				if (PE_parse_boot_argn("adsp_dtb", &dtb, sizeof(dtb)) && dtb != 0) adsp_dtb_memory = dtb;
++			}
++			if (PE_parse_boot_argn("adsp_rsc_v2", &v2, sizeof(v2)) && v2 != 0) rsc_v3 = false;
++			{
++				uint32_t dump = 0;
++
++				/* adsp_cmddump=1: every entry of the command database, by name and
++				 * address -- the bus clock managers ("mc0", "sh0", ...) live here
++				 * too, and the scan says whether one is reachable */
++				if (PE_parse_boot_argn("adsp_cmddump", &dump, sizeof(dump)) && dump != 0 && cmd_db == NULL) {
++					cmd_db = (const struct cmd_db_header *)ml_io_map_unmappable(cmd_db_phys, CMD_DB_SIZE, VM_WIMG_WCOMB);
++					if (cmd_db->magic[0] == 0xdb && cmd_db->magic[1] == 0x30 && cmd_db->magic[2] == 0x03 && cmd_db->magic[3] == 0x0c) {
++						for (unsigned sl = 0; sl < 8; sl++) {
++							const struct cmd_db_slave *slave = &cmd_db->slave[sl];
++							const struct cmd_db_entry *entry = (const struct cmd_db_entry *)(cmd_db->data + slave->header_offset);
++
++							if (slave->id == 0 || slave->count > 512) {
++								continue;
++							}
++							for (unsigned i = 0; i < slave->count; i++) {
++								if (entry[i].id[0] < 32 || entry[i].id[0] > 127) {
++									continue;
++								}
++								printf("adsp: cmddb [%u][%u] %c%c%c%c%c%c%c%c %#x len %u\n", sl, i,
++								    entry[i].id[0], entry[i].id[1] ? entry[i].id[1] : ' ',
++								    entry[i].id[2] ? entry[i].id[2] : ' ', entry[i].id[3] ? entry[i].id[3] : ' ',
++								    entry[i].id[4] ? entry[i].id[4] : ' ', entry[i].id[5] ? entry[i].id[5] : ' ',
++								    entry[i].id[6] ? entry[i].id[6] : ' ', entry[i].id[7] ? entry[i].id[7] : ' ',
++								    entry[i].address, entry[i].length);
++							}
++						}
++					} else {
++						printf("adsp: cmddump: the database is not there\n");
++					}
++				}
++			}
++		}
++			/* adsp_probe=<phys>: read a word there through a page of its own and
++			 * stop -- where a big mapping of the region aborts, a page may not */
++			if (PE_parse_boot_argn("adsp_probe", &smem, sizeof(smem)) && smem != 0) {
++				volatile uint32_t *page = (volatile uint32_t *)ml_io_map_wcomb(smem, 0x1000);
++
++				printf("adsp: probe %#llx: %#x\n", smem, page[0]);
++				thread_terminate(current_thread());
++			}
++		}
++	}
++
+ 	uint32_t on = 0;
+ 	thread_t thread;
+ 
+diff --git a/bsd/dev/hakios.battery.c b/bsd/dev/hakios.battery.c
+index 58030d4..bd01797 100644
+--- a/bsd/dev/hakios.battery.c
++++ b/bsd/dev/hakios.battery.c
+@@ -126,7 +126,12 @@ SYSCTL_INT(_kern_hakios, OID_AUTO, battery_cycles, CTLFLAG_RD | CTLFLAG_LOCKED,
+ SYSCTL_INT(_kern_hakios, OID_AUTO, battery_from_dsp, CTLFLAG_RD | CTLFLAG_LOCKED,
+     &battery_source_dsp, 0, "1 when the values come from the audio DSP's battery manager");
+ 
+-extern void HakiosBatteryReport(const void *state, unsigned size);     /* iokit/Kernel/hakios.battery.cpp */
++/* iokit/Kernel/hakios.battery.cpp is out of this build (bisect): the report
++ * sinks into the void */
++static void HakiosBatteryReport(const void *state, unsigned size)
++{
++#pragma unused(state, size)
++}
+ 
+ void
+ hakios_battery_report(const struct hakios_battery_state *b)
+diff --git a/bsd/dev/hakios.buttons.c b/bsd/dev/hakios.buttons.c
+index 94dbbd5..f2c9d2c 100644
+--- a/bsd/dev/hakios.buttons.c
++++ b/bsd/dev/hakios.buttons.c
+@@ -148,10 +148,58 @@ struct peripheral {
+ 	uint16_t        id;             /* slave << 8 | peripheral: the high byte of its register addresses */
+ 	uint16_t        channel;
+ 	bool            found;
++	bool            usable;         /* the GPIO's key was taken from it (step 4) */
+ };
+ static struct peripheral pon = { .name = "the PMK8350's power-on block", .id = 0x013 };          /* registers 0x1300 of slave 0 */
+ static struct peripheral pin = { .name = "GPIO6 of the PM7325", .id = 0x18d };                   /* registers 0x8d00 of slave 1 */
+-
++static bool buttons_swap;        /* boot-arg buttons_swap=1: resin is volume up, the GPIO key volume down */
++static bool arb_v8;              /* version 8 of the arbiter (SM8750): its own core, table and observer */
++static vm_offset_t arb_v8_core;  /* 0x0c400000: version at +0, channel count at +4, APID table at +0x2000 */
++static vm_offset_t arb_v8_obs;   /* 0x0c440000: 0x20 per APID -- cmd +0x00, status +0x08, data +0x18 */
++static vm_offset_t arb_v8_chn;   /* 0x0c500000, 0x1000 per APID -- the write side, exactly
++                                  * as the touch driver maps it (one 4 MB mapping); only
++                                  * opcode 0 ("extended write long") gets through the
++                                  * hypervisor on this phone */
++
++/* One register write to a peripheral's page through the "chnls" region -- the
++ * touch driver's proven path (hakios.dodge_touch_hw.h s39_avspmi), with the
++ * same lock so the two drivers' writes cannot interleave. */
++static const char *
++spmi_write_v8(const struct peripheral *p, uint8_t reg, uint8_t val)
++{
++	vm_offset_t w;
++	uint64_t start, now, interval;
++	uint32_t status;
++
++	/* the observer channel (0x20 per APID) rather than the chnls page (0x1000 per
++	 * APID): reads through the observer work everywhere, and opcode 0 writes --
++	 * never tried here before -- might pass the hypervisor's filter the same way
++	 * they do on the chnls page for the touch driver's APID. The chnls page for
++	 * THIS peripheral's APID aborts the kernel (a per-APID stage-2 mapping). */
++	/* the chnls region (0x1000 per APID), as the touch driver maps it: the
++	 * write side.  Writes through the observer never reach the PMIC, and the
++	 * channel must be this system's own (owner EE 0 at the cnfg region's table;
++	 * another EE's channel -- the wrong pin's APID was one -- faults the
++	 * kernel) */
++	if (arb_v8_chn == 0) {
++		arb_v8_chn = ml_io_map(0x0c500000UL, 0x400000);
++		if (arb_v8_chn == 0) return "the write side is not mapped";
++	}
++	w = arb_v8_chn + 0x1000UL * p->channel;
++	nanoseconds_to_absolutetime(10000 * (uint64_t)NSEC_PER_USEC, &interval);   /* a write is slower than a read */
++	hakios_spmi_lock();
++	wr(w + 0x10, val);
++	wr(w + 0x00, (0u << 27) | ((uint32_t)reg << 4));      /* opcode 0 */
++	start = mach_absolute_time();
++	do {
++		status = rd(w + 0x08);
++		now = mach_absolute_time();
++	} while (!(status & STATUS_DONE) && now - start < interval);
++	hakios_spmi_unlock();
++	if (!(status & STATUS_DONE)) return "no answer from the arbiter";
++	if (status & (STATUS_FAILURE | STATUS_DENIED | STATUS_DROPPED)) return "the transfer did not go through";
++	return NULL;
++}
+ /* How the reads have gone: said once a minute. */
+ static struct {
+ 	uint64_t reads, failed, total_ns, longest_ns, last_ns;
+@@ -164,20 +212,27 @@ static struct {
+ static const char *
+ spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t count)
+ {
+-	vm_offset_t channel = arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
++	vm_offset_t channel = arb_v8 ?
++	    arb_v8_obs + 0x20UL * p->channel :                 /* v8: the observer region, 0x20 per APID */
++	    arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
+ 	uint64_t start = mach_absolute_time(), now, interval, taken;
+ 	uint32_t status, data[2];
+ 	const char *problem = NULL;
+ 
+ 	nanoseconds_to_absolutetime(READ_TIMEOUT_US * (uint64_t)NSEC_PER_USEC, &interval);
+ 	hakios_spmi_lock();
+-	wr(channel + OBSERVER_COMMAND, COMMAND_READ | (uint32_t)reg << 4 | (count - 1));
++	if (arb_v8) {
++		/* v8's own encoding: opcode 13 ("extended read long") in [31:27], register in [11:4] */
++		wr(channel + 0x00, (13u << 27) | ((uint32_t)reg << 4) | (count - 1));
++	} else {
++		wr(channel + OBSERVER_COMMAND, COMMAND_READ | (uint32_t)reg << 4 | (count - 1));
++	}
+ 	do {
+-		status = rd(channel + OBSERVER_STATUS);
++		status = rd(channel + (arb_v8 ? 0x08 : OBSERVER_STATUS));
+ 		now = mach_absolute_time();
+ 	} while (!(status & STATUS_DONE) && now - start < interval);
+-	data[0] = rd(channel + OBSERVER_DATA0);
+-	data[1] = count > 4 ? rd(channel + OBSERVER_DATA1) : 0;
++	data[0] = rd(channel + (arb_v8 ? 0x18 : OBSERVER_DATA0));
++	data[1] = !arb_v8 && count > 4 ? rd(channel + OBSERVER_DATA1) : 0;
+ 	hakios_spmi_unlock();
+ 
+ 	if (!(status & STATUS_DONE)) {
+@@ -210,6 +265,96 @@ spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t coun
+  * Which channel is that peripheral's. Several can be: one per system that may write to it. As
+  * Linux chooses: the first, unless a later one is ours to write through.
+  */
++static void
++find_channel_v8(struct peripheral *p, uint32_t channels)      /* the APID table: ppid in [19:8] */
++{
++	{
++		/* bring-up: the table as it is -- 0x98b (the touch chip's page) is the
++		 * control: the touch driver finds it, so must this scan */
++		static bool said;
++
++		if (!said) {
++			unsigned shown = 0;
++
++			said = true;
++			for (uint32_t n = 0; n < channels && shown < 16; n++) {
++				uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
++
++				if (!map) {
++					continue;
++				}
++				printf("buttons: APID %u: map %#x (ppid %#x)\n", n, map, (map >> 8) & 0xfff);
++				shown++;
++			}
++			if (shown == 0) {
++				printf("buttons: the APID table reads all zero\n");
++			}
++			/* the touch driver finds ppid 0x98b at APID 663 on this phone:
++			 * what does THIS scan see there, and around it (0x98e is GPIO6,
++			 * a few entries on)? The answer says whether the scan works */
++			{
++				unsigned nonzero = 0;
++
++				for (uint32_t n = 0; n < channels; n++) {
++					uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
++
++					if (map) {
++						nonzero++;
++					}
++					if (n >= 660 && n <= 670) {
++						printf("buttons: APID %u: map %#x (ppid %#x)\n", n, map, (map >> 8) & 0xfff);
++					}
++				}
++				printf("buttons: %u non-zero entries in %u\n", nonzero, channels);
++			}
++			/* every APID that reaches a sid-1 or sid-9 GPIO peripheral
++			 * (0x88 to 0x90): the key's GPIO may sit at more than one, and
++			 * only some of them may have the write side mapped */
++			for (uint32_t n = 0; n < channels; n++) {
++				uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
++				uint32_t ppid = (map >> 8) & 0xfff;
++
++				if ((ppid >> 8) == 1 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
++					printf("buttons: APID %u: sid-1 GPIO at %#x\n", n, ppid);
++				} else if ((ppid >> 8) == 9 && (ppid & 0xff) >= 0x88 && (ppid & 0xff) <= 0x90) {
++					printf("buttons: APID %u: sid-9 GPIO at %#x\n", n, ppid);
++				}
++			}
++			/* the ownership table (v7: the cnfg region, 4 bytes per APID, the
++			 * low 3 bits the owner): an APID whose owner is not this system's
++			 * EE rejects writes -- a channel of the power-on block's, of the
++			 * touch's (whose write path works), and of the key's candidates
++			 * say whose are whose */
++			{
++				vm_offset_t cnfg = ml_io_map(0xc42d000UL, 0x4000);
++				const uint32_t interesting[] = { 581, 662, 132, 608, 609, 610, 611, 684, 685, 686, 696, 728 };
++
++				if (cnfg != 0) {
++					for (unsigned i = 0; i < sizeof(interesting) / sizeof(interesting[0]); i++) {
++						uint32_t own = rd(cnfg + 4 * interesting[i]);
++
++						printf("buttons: APID %u: owner %#x (EE %u)\n", interesting[i], own, own & 7);
++					}
++					/* (the mapping stays: taking it apart could take the
++					 * arbiter's own with it, as the GIC's once did) */
++				}
++			}
++		}
++	}
++	for (uint32_t n = 0; n < channels; n++) {
++		uint32_t map = rd(arb_v8_core + 0x2000 + 4 * n);
++
++		if ((map >> 8 & 0xfff) == p->id) {
++			p->channel = n;
++			p->found = true;
++			printf("buttons: APID %u of the arbiter is %s (slave %u, peripheral %#x)\n",
++			    n, p->name, p->id >> 8, p->id & 0xff);
++			return;
++		}
++	}
++	printf("buttons: no APID of the arbiter is %s (slave %u, peripheral %#x)\n", p->name, p->id >> 8, p->id & 0xff);
++}
++
+ static void
+ find_channel(struct peripheral *p, uint32_t channels)
+ {
+@@ -259,6 +404,7 @@ find_channel(struct peripheral *p, uint32_t channels)
+ #define GPIO_REG_MODE           0x40            /* [1:0]: 0 input, 1 output, 2 both, 3 analog */
+ #define GPIO_REG_SUPPLY         0x41
+ #define GPIO_REG_PULL           0x42            /* [2:0]: 0 to 3 up (30, 1.5, 31.5 uA, 1.5 with a boost), 4 down, 5 none */
++#define GPIO_REG_OUT_CTL        0x45            /* for the log: the output's source and strength */
+ #define GPIO_REG_ENABLE         0x46            /* [7] */
+ 
+ #define POLL_MS                 16
+@@ -333,20 +479,24 @@ buttons_poll(void)
+ 	const char *problem;
+ 	uint8_t status;
+ 
+-	if (power.usable || volume_down.usable) {
++	if (power.usable || volume_down.usable || volume_up.usable) {
+ 		problem = spmi_read(&pon, REG_RT_STATUS, &status, 1);
+ 		if (problem == NULL) {
+ 			button_look(&power, status & PON_KPDPWR);
+-			button_look(&volume_down, status & PON_RESIN);
++			/* buttons_swap=1: the PON's resin key is volume up and the PMIC GPIO one
++			 * volume down (the OnePlus 13's wiring; the POCO X5 Pro's is the reverse) */
++			button_look(buttons_swap ? &volume_up : &volume_down, status & PON_RESIN);
+ 		} else if (said < 8) {
+ 			said++;
+ 			printf("buttons: reading %s: %s\n", pon.name, problem);
+ 		}
+ 	}
+-	if (volume_up.usable) {
++	/* the GPIO key only when the pin was taken (its .usable flag set by pin_input);
++	 * the PON's resin key sets the OTHER flag, which must not cause a GPIO read */
++	if (pin.usable) {
+ 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
+ 		if (problem == NULL) {
+-			button_look(&volume_up, !(status & GPIO_LEVEL));
++			button_look(buttons_swap ? &volume_down : &volume_up, !(status & GPIO_LEVEL));
+ 		} else if (said < 8) {
+ 			said++;
+ 			printf("buttons: reading %s: %s\n", pin.name, problem);
+@@ -399,9 +549,11 @@ pon_inputs(void)
+ 	    "enabled %#x, latched %#x, pending %#x\n", r[0], (r[0] & PON_KPDPWR) ? "HELD" : "released",
+ 	    (r[0] & PON_RESIN) ? "HELD" : "released", r[REG_INT_SET_TYPE - REG_RT_STATUS], r[REG_INT_POLARITY_HIGH - REG_RT_STATUS],
+ 	    r[REG_INT_POLARITY_LOW - REG_RT_STATUS], r[REG_INT_ENABLED - REG_RT_STATUS], more[0], more[1]);
+-	power.usable = volume_down.usable = true;
++	struct button *resin_key = buttons_swap ? &volume_up : &volume_down;
++
++	power.usable = resin_key->usable = true;
+ 	power.last = r[0] & PON_KPDPWR;
+-	volume_down.last = r[0] & PON_RESIN;
++	resin_key->last = r[0] & PON_RESIN;
+ }
+ 
+ /* Step 4 for the pin: it is volume up only if it is an input with a pull-up, and switched on. */
+@@ -412,8 +564,22 @@ pin_input(void)
+ 	uint8_t c[8], status = 0;
+ 	unsigned mode, pull;
+ 
+-	printf("buttons: next: read the setup and the level of %s (registers 0x8d40 to 0x8d47, 0x8d10)\n", pin.name);
+-	problem = spmi_read(&pin, GPIO_REG_MODE, c, 8);
++	printf("buttons: next: read the setup and the level of %s (registers 0x40 to 0x43, 0x46, 0x10)\n", pin.name);
++	problem = spmi_read(&pin, GPIO_REG_MODE, c, 4);          /* four bytes: all this observer carries */
++	{
++		uint8_t enable = 0, out_ctl = 0, after = 0;
++
++		if (problem == NULL) {
++			problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1);
++		}
++		if (problem == NULL) {
++			(void)spmi_read(&pin, GPIO_REG_OUT_CTL, &out_ctl, 1);    /* for the log */
++			(void)spmi_read(&pin, 0x47, &after, 1);                  /* what is past the enable */
++		}
++		c[4] = out_ctl;
++		c[6] = enable;
++		c[7] = after;
++	}
+ 	if (problem == NULL) {
+ 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
+ 	}
+@@ -428,13 +594,53 @@ pin_input(void)
+ 	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
+ 	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+ 	    (status & GPIO_LEVEL) ? "high (released)" : "LOW (held)");
++	struct button *pin_key = buttons_swap ? &volume_down : &volume_up;
++
++	/* The phone's own system configures the key's pin from its device tree; this
++	 * chain's firmware leaves it as the bootloader had it. Configuring it here
++	 * would take a PMIC register write through the arbiter's write side, and
++	 * that page kills this kernel on this phone -- so the key is used only when
++	 * the pin already is an enabled pulled-up input, and left alone otherwise
++	 * (a pin that reads stuck LOW would look like the key held down forever). */
+ 	if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
+-		printf("buttons: volume up's pin is not an enabled input with a pull-up. Making it one is a write to the PMIC, "
+-		    "which this driver does not do: volume up is left alone\n");
+-		return;
++		const char *problem;
++
++		/* the phone's firmware has not set the key's pin up. Make it an enabled
++		 * input with a pull-up through the same PMIC write the touch driver uses
++		 * (the 4 MB chnls mapping, opcode 0); v5 phones are left alone */
++		if (!arb_v8) {
++			printf("buttons: the key's pin is not ready and this arbiter's write side is not supported: left alone\n");
++			return;
++		}
++		printf("buttons: the key's pin is not ready -- writing what is missing\n");
++		if ((mode != 0 && (problem = spmi_write_v8(&pin, GPIO_REG_MODE, 0x00)) != NULL) ||
++		    ((c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7) != 1 && (problem = spmi_write_v8(&pin, GPIO_REG_SUPPLY, 0x01)) != NULL) ||
++		    (pull >= 4 && (problem = spmi_write_v8(&pin, GPIO_REG_PULL, 0x00)) != NULL) ||
++		    ((problem = spmi_write_v8(&pin, GPIO_REG_ENABLE, 0x80)) != NULL)) {
++			printf("buttons: setting the pin up: %s: the key is left alone\n", problem);
++			return;
++		}
++		{
++			uint8_t enable = 0;
++
++			if ((problem = spmi_read(&pin, GPIO_REG_MODE, c, 4)) != NULL ||
++			    (problem = spmi_read(&pin, GPIO_REG_ENABLE, &enable, 1)) != NULL) {
++				printf("buttons: re-reading the pin: %s: the key is left alone\n", problem);
++				return;
++			}
++			c[GPIO_REG_ENABLE - GPIO_REG_MODE] = enable;
++		}
++		mode = c[0] & 3;
++		pull = c[GPIO_REG_PULL - GPIO_REG_MODE] & 7;
++		if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
++			printf("buttons: the pin still not right after writing: left alone\n");
++			return;
++		}
++		printf("buttons: the pin is now mode %u, pull %u, enabled\n", mode, pull);
+ 	}
+-	volume_up.usable = true;
+-	volume_up.last = !(status & GPIO_LEVEL);
++	pin_key->usable = true;
++	pin.usable = true;
++	pin_key->last = !(status & GPIO_LEVEL);
+ }
+ 
+ static void
+@@ -460,21 +666,39 @@ buttons_thread(void *parameter, __unused wait_result_t result)
+ 	arb_observer = ml_io_map(ARB_OBSERVER_PHYS, ARB_OBSERVER_SIZE);
+ 	version = rd(arb_core + ARB_VERSION);
+ 	channels = rd(arb_core + ARB_FEATURES) & 0x7ff;
+-	printf("buttons: PMIC arbiter version %#x, %u channels\n", version, channels);
+-	if (version < ARB_VERSION_5 || version >= ARB_VERSION_7) {
+-		printf("buttons: this driver knows version 5 of the arbiter only: no buttons\n");
++	/* SM8750: the version-5 core at 0xc440000 is this SoC's observer region; the
++	 * core with the version and the APID table sits at 0xc400000 (version 7 on
++	 * this phone -- the touch driver's proven access: observer 0x20 per APID) */
++	arb_v8_core = ml_io_map(0x0c400000UL, 0x4000);
++	arb_v8_obs = ml_io_map(0x0c440000UL, 0x10000);
++	if (rd(arb_v8_core) >> 28 >= 7) {
++		arb_v8 = true;
++		channels = rd(arb_v8_core + 4) & 0x7ff;
++		version = rd(arb_v8_core);
++	}
++	printf("buttons: PMIC arbiter version %#x, %u channels%s\n", version, channels, arb_v8 ? " (v7 layout)" : "");
++	if (!arb_v8 && (version < ARB_VERSION_5 || version >= ARB_VERSION_7)) {
++		printf("buttons: this driver knows versions 5 and 8 of the arbiter: no buttons\n");
+ 		goto out;
+ 	}
+-	if (channels == 0 || channels > ARB_MAX_CHANNELS) {
+-		channels = ARB_MAX_CHANNELS;
++	/* the version-5 table is what ARB_MAX_CHANNELS was sized for; the v7 one
++	 * holds up to 1024 APIDs (this phone's says 896, and the touch chip's APID
++	 * is 663 -- beyond the old cap, which is why the keys were never found) */
++	if (channels == 0 || channels > (arb_v8 ? 1024 : ARB_MAX_CHANNELS)) {
++		channels = arb_v8 ? 1024 : ARB_MAX_CHANNELS;
+ 	}
+ 	if (steps < 2) {
+ 		goto out;
+ 	}
+ 
+ 	printf("buttons: step 2: look through the arbiter's table for the channels of the two peripherals\n");
+-	find_channel(&pon, channels);
+-	find_channel(&pin, channels);
++	if (arb_v8) {
++		find_channel_v8(&pon, channels);
++		find_channel_v8(&pin, channels);
++	} else {
++		find_channel(&pon, channels);
++		find_channel(&pin, channels);
++	}
+ 	if (steps < 3) {
+ 		goto out;
+ 	}
+@@ -553,6 +777,17 @@ hakios_buttons_init(void)
+ 	if (steps == 0) {
+ 		return;
+ 	}
++	/* buttons_pin=0xSIDPP: another phone's volume key GPIO (slave id << 8 | peripheral),
++	 * buttons_swap=1: the PON's resin key is volume up, the GPIO one volume down */
++	{
++		uint32_t pin_id = 0;
++
++		if (PE_parse_boot_argn("buttons_pin", &pin_id, sizeof(pin_id)) && pin_id != 0) {
++			pin.id = (uint16_t)pin_id;
++			pin.name = "the boot-arg's PMIC GPIO";
++		}
++		PE_parse_boot_argn("buttons_swap", &buttons_swap, sizeof(buttons_swap));
++	}
+ 	if (kernel_thread_start(buttons_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+diff --git a/bsd/dev/hakios.input.c b/bsd/dev/hakios.input.c
+index 5f8aeb8..c649229 100644
+--- a/bsd/dev/hakios.input.c
++++ b/bsd/dev/hakios.input.c
+@@ -31,6 +31,9 @@ extern void loader_log_line(const char *line);
+  * A "tl:" line, for the kernel's drivers: into the loader's log as it is written -- the kernel's own
+  * log keeps only the last of a run, and a live look at the loader's (XL_FOLLOW) then misses nothing.
+  */
++/* the K90's framebuffer counts its shown frames here (their MiniIOMobileFramebuffer) */
++uint32_t redwood_frames_shown;
++
+ void hakios_tl(const char *format, ...) __printflike(1, 2);
+ 
+ void
+@@ -213,10 +216,16 @@ hakios_input_init(void)
+ 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-touch") == NULL) {
+ 		printf("hakios-touch: cannot create the device\n");
+ 	}
++	/* the same queue under its earlier name, for user space built before the rename */
++	(void)devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-touch");
+ 	exit_call = thread_call_allocate(exit_hold_elapsed, NULL);
+ 	hakios_cpufreq_init();
+ 	hakios_virtio_input_init();
+ 	hakios_goodix_init();
++	hakios_dodge_touch_init();	/* boot-arg synaptics=1: the OnePlus 13's Synaptics S3910 (TouchCom) */
++	extern void adreno8_init(void);	/* boot-arg adreno8=N: the Adreno 830 stepper (from the Redmi K90 port) */
++	adreno8_init();
++
+ 	hakios_buttons_init();
+ 	hakios_battery_init();
+ 	hakios_ufs_init();
+@@ -224,5 +233,7 @@ hakios_input_init(void)
+ 	hakios_adreno_init();
+ 	hakios_wifi_init();
+ 	hakios_adsp_init();
++	extern void hakios_wcn_init(void);
++	hakios_wcn_init();	/* boot-arg wifi_pcie=N: the WCN7850 PCIe bring-up, staged */
+ 	hakios_mpss_init();
+ }
+diff --git a/bsd/dev/hakios.net.c b/bsd/dev/hakios.net.c
+index 5714d38..9db1284 100644
+--- a/bsd/dev/hakios.net.c
++++ b/bsd/dev/hakios.net.c
+@@ -34,7 +34,11 @@
+ #include <sys/sockio.h>
+ #include <sys/systm.h>
+ 
+-extern void HakiosWLANStart(const char *interface, const uint8_t *address);  /* iokit/Kernel/hakios.wlan.cpp */
++/* iokit/Kernel/hakios.wlan.cpp is out of this build (bisect) */
++static void HakiosWLANStart(const char *interface, const uint8_t *address)
++{
++#pragma unused(interface, address)
++}
+ 
+ static LCK_GRP_DECLARE(net_lck_grp, "hakios-net");
+ 
+diff --git a/bsd/kern/makesyscalls.sh b/bsd/kern/makesyscalls.sh
+index 52992d4..140fed3 100755
+--- a/bsd/kern/makesyscalls.sh
++++ b/bsd/kern/makesyscalls.sh
+@@ -671,14 +671,14 @@ s/\$//g
+ 		}
+ 
+ 		printf("#if CONFIG_REQUIRES_U32_MUNGING\n") > sysent
+-		printf("\t{ \(sy_call_t *\)(void (*)(void))%s, %s, %s, %s, %s},",
++		printf("\t{ (sy_call_t *)(void (*)(void))%s, %s, %s, %s, %s},",
+ 				tempname, munge32, munge_ret, argssize, size32) > sysent
+ 		linesize = length(tempname) + length(munge32) + \
+ 			length(munge_ret) + length(argssize) + length(size32) + 28
+ 		align_comment(linesize, 88, sysent)
+ 		printf("/* %d = %s%s*/\n", syscall_num, funcname, additional_comments) > sysent
+ 		printf("#else\n") > sysent
+-		printf("\t{ \(sy_call_t *\)(void (*)(void))%s, %s, %s, %s},\n",
++		printf("\t{ (sy_call_t *)(void (*)(void))%s, %s, %s, %s},\n",
+ 				tempname, munge_ret, argssize, size32) > sysent
+ 		printf("#endif\n") > sysent
+ 		
+diff --git a/bsd/sys/hakios.input.h b/bsd/sys/hakios.input.h
+index 7e8ce82..f0d5123 100644
+--- a/bsd/sys/hakios.input.h
++++ b/bsd/sys/hakios.input.h
+@@ -41,6 +41,7 @@ void hakios_touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y);
+ void hakios_input_init(void);
+ void hakios_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio pointer and keyboard */
+ void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
++void hakios_dodge_touch_init(void);    /* boot-arg synaptics=1: the OnePlus 13's Synaptics S3910 (TouchCom) */
+ void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
+ void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
+ void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
+diff --git a/iokit/Kernel/GenericARMPE.cpp b/iokit/Kernel/GenericARMPE.cpp
+index cfaa292..1224688 100644
+--- a/iokit/Kernel/GenericARMPE.cpp
++++ b/iokit/Kernel/GenericARMPE.cpp
+@@ -102,12 +102,12 @@ GenericARMCPU::start(IOService * provider)
+ 	info.phys_id = physID;
+ 	info.cluster_id = topology->cluster_id;
+ 	info.cluster_type = topology->cluster_type;
++	setCPUState(kIOCPUStateUninitalized);
+ 	if (ml_processor_register(&info, &machProcessor, &ipi_handler, &pmi_handler) != KERN_SUCCESS) {
+ 		IOLog("GenericARMCPU: ml_processor_register failed\n");
+ 		return false;
+ 	}
+ 
+-	setCPUState(kIOCPUStateUninitalized);
+ 	registerService();
+ 	IOLog("GenericARMCPU: cpu %u (phys id 0x%x) registered\n", (unsigned)getCPUNumber(), physID);
+ 	return true;
+@@ -216,6 +216,8 @@ GenericARMPE::start(IOService * provider)
+ 		return false;
+ 	}
+ 	IOLog("GenericARMPE: platform \"%s\"\n", provider->getName());
++	/* XNU 12377 boots CPUs inside ml_processor_register(), before start() returns. */
++	psci_smp_init();
+ 
+ 	/*
+ 	 * super::start() published the /cpus children as nubs. Attach a CPU driver to each
+@@ -252,9 +254,6 @@ GenericARMPE::start(IOService * provider)
+ 	if (cpus[master_cpu] != NULL) {
+ 		/* Unblocks everything that waits for the CPU count to be known. */
+ 		ml_set_max_cpus(count);
+-		if (count > 1) {
+-			psci_smp_init();
+-		}
+ 		/*
+ 		 * The slower cores (an L2 access penalty, the loader's "small-core") are started 28 seconds
+ 		 * later (boot-arg small_cores_after=S; 0: at once). With all seven from the start the lock
+diff --git a/iokit/Kernel/MiniFramebufferScale.h b/iokit/Kernel/MiniFramebufferScale.h
+new file mode 100644
+index 0000000..2ae9663
+--- /dev/null
++++ b/iokit/Kernel/MiniFramebufferScale.h
+@@ -0,0 +1,117 @@
++/*
++ * The bilinear scaling of MiniIOMobileFramebuffer.cpp's drawRows(), a row at a time: mixRows()
++ * makes a row of the picture from the two around where a panel row falls, scaleRow() a panel row
++ * from that. Four pixels at a time where it can, with the processor's vector unit (the compiler's
++ * own vector types: -mkernel builds see no arm_neon.h); the result is exactly blend()'s for every
++ * pixel either way (tools/test-fb-scale.py).
++ *
++ * Kept apart from the driver so that the host can build it as it is.
++ */
++#ifndef _MINI_FRAMEBUFFER_SCALE_H
++#define _MINI_FRAMEBUFFER_SCALE_H
++
++#include <stdint.h>
++
++/*
++ * Two pixels mixed: `w` of 256 of the second. Two of the four channels at a time, in one word.
++ */
++static inline uint32_t
++blend(uint32_t a, uint32_t b, uint32_t w)
++{
++	uint32_t rb = ((a & 0xff00ff) * (256 - w) + (b & 0xff00ff) * w) >> 8 & 0xff00ff;
++	uint32_t ga = ((a >> 8 & 0xff00ff) * (256 - w) + (b >> 8 & 0xff00ff) * w) & 0xff00ff00;
++
++	return rb | ga;
++}
++
++typedef uint8_t  fb_u8x16 __attribute__((vector_size(16)));
++typedef uint8_t  fb_u8x8 __attribute__((vector_size(8)));
++typedef uint16_t fb_u16x8 __attribute__((vector_size(16)));
++typedef uint16_t fb_u16x4 __attribute__((vector_size(8)));
++
++/* blend() of four pixels: `wl` the weights of the channels of the first two, `wh` of the last two. */
++static inline fb_u8x16
++blend4(fb_u8x16 a, fb_u8x16 b, fb_u16x8 wl, fb_u16x8 wh)
++{
++	fb_u16x8 al = __builtin_convertvector(__builtin_shufflevector(a, a, 0, 1, 2, 3, 4, 5, 6, 7), fb_u16x8);
++	fb_u16x8 ah = __builtin_convertvector(__builtin_shufflevector(a, a, 8, 9, 10, 11, 12, 13, 14, 15), fb_u16x8);
++	fb_u16x8 bl = __builtin_convertvector(__builtin_shufflevector(b, b, 0, 1, 2, 3, 4, 5, 6, 7), fb_u16x8);
++	fb_u16x8 bh = __builtin_convertvector(__builtin_shufflevector(b, b, 8, 9, 10, 11, 12, 13, 14, 15), fb_u16x8);
++	/* (at most 255 * 256: in 16 bits) */
++	fb_u8x8 lo = __builtin_convertvector((al * (256 - wl) + bl * wl) >> 8, fb_u8x8);
++	fb_u8x8 hi = __builtin_convertvector((ah * (256 - wh) + bh * wh) >> 8, fb_u8x8);
++
++	return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
++}
++
++static inline fb_u8x16
++load4(const uint32_t * p)
++{
++	fb_u8x16 v;
++
++	__builtin_memcpy(&v, p, sizeof(v));
++	return v;
++}
++
++static inline void
++store4(uint32_t * p, fb_u8x16 v)
++{
++	__builtin_memcpy(p, &v, sizeof(v));
++}
++
++/* Columns `first` to `last` of a row `w` of 256 of the way from `upper` to `lower`. */
++static inline void
++mixRows(const uint32_t * upper, const uint32_t * lower, uint32_t * __restrict mixed, uint32_t first, uint32_t last,
++    uint32_t w)
++{
++	const fb_u16x8 none = { 0, 0, 0, 0, 0, 0, 0, 0 };
++	fb_u16x8 weight = none + (uint16_t) w;
++	uint32_t c = first;
++
++	for (; c + 3 <= last; c += 4) {
++		store4(mixed + c, blend4(load4(upper + c), load4(lower + c), weight, weight));
++	}
++	for (; c <= last; c++) {
++		uint32_t a = upper[c], b = lower[c];
++
++		mixed[c] = a == b ? a : blend(a, b, w);         /* (most of a screen is the same as next to it) */
++	}
++}
++
++/*
++ * `n` panel pixels from a row of `width`: the ith is pixel column[i] mixed with the next,
++ * weights[i] of 256 of the next (0 where there is none). Four at a time where they take four
++ * pixels side by side, as all do but those where the panel repeats a pixel of the picture.
++ */
++static inline void
++scaleRow(const uint32_t * from, uint32_t * __restrict out, const uint32_t * __restrict column,
++    const uint16_t * __restrict weights, uint32_t n, uint32_t width)
++{
++	uint32_t i = 0;
++
++	for (; i + 4 <= n; i += 4) {
++		uint32_t c = column[i];
++
++		/* (column[] goes up by the same one or two steps all along: three in three is one each) */
++		if (column[i + 3] == c + 3 && c + 4 < width) {
++			fb_u16x4 w;
++
++			__builtin_memcpy(&w, weights + i, sizeof(w));
++			store4(out + i, blend4(load4(from + c), load4(from + c + 1), __builtin_shufflevector(w, w, 0, 0, 0, 0, 1, 1, 1, 1),
++			    __builtin_shufflevector(w, w, 2, 2, 2, 2, 3, 3, 3, 3)));
++			continue;
++		}
++		for (uint32_t k = i; k < i + 4; k++) {
++			uint32_t a = from[column[k]], wk = weights[k];
++
++			out[k] = wk == 0 || a == from[column[k] + 1] ? a : blend(a, from[column[k] + 1], wk);
++		}
++	}
++	for (; i < n; i++) {
++		uint32_t a = from[column[i]], w = weights[i];
++
++		out[i] = w == 0 || a == from[column[i] + 1] ? a : blend(a, from[column[i] + 1], w);
++	}
++}
++
++#endif /* _MINI_FRAMEBUFFER_SCALE_H */
+diff --git a/iokit/Kernel/MiniFramebufferSwap.h b/iokit/Kernel/MiniFramebufferSwap.h
+new file mode 100644
+index 0000000..30d334d
+--- /dev/null
++++ b/iokit/Kernel/MiniFramebufferSwap.h
+@@ -0,0 +1,38 @@
++#ifndef _MINI_FRAMEBUFFER_SWAP_H
++#define _MINI_FRAMEBUFFER_SWAP_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++/* Queue offsets match the fields read from the iOS 16.5 (20F66) request. */
++#define SWAP_SIZE               0x46c
++#define SWAP_ID                 0x50
++#define SWAP_SURFACE(layer)     (0x54 + 4 * (layer))    /* surface number, 0 = none */
++#define SWAP_SOURCE(layer)      (0x64 + 16 * (layer))   /* x, y, width, height in the surface */
++#define SWAP_ENABLED(layer)     (0xa4 + 4 * (layer))
++#define SWAP_DEST(layer)        (0xc4 + 16 * (layer))   /* x, y, width, height on the display */
++#define SWAP_LAYERS_SET         0x104                   /* bit per layer given in this swap */
++#define SWAP_LAYERS_CLEARED     0x108
++#define SWAP_LAYERS             4
++
++/*
++ * The 23G90 request is 0x588 bytes; all fields above move by 0x48 bytes.
++ * A SWAP_SIZE copy from that offset ends at 0x4b4, within the request.
++ * Only these fields share the queue layout; later protocol fields are unused.
++ */
++static inline const uint8_t *
++miniFramebufferSwapPayload(const void * input, uint32_t size)
++{
++	if (input == NULL) {
++		return NULL;
++	}
++	if (size == SWAP_SIZE) {
++		return (const uint8_t *) input;
++	}
++	if (size == 0x588) {
++		return (const uint8_t *) input + 0x48;
++	}
++	return NULL;
++}
++
++#endif /* _MINI_FRAMEBUFFER_SWAP_H */
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+index 407c8df..ee233b3 100644
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -21,6 +21,9 @@
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSBoolean.h>
++#include <libkern/c++/OSString.h>
++#include <libkern/c++/OSSymbol.h>
++#include <libkern/c++/OSCollectionIterator.h>
+ #include <kern/thread_call.h>
+ #include <kern/thread.h>
+ #include <kern/clock.h>
+@@ -36,8 +39,11 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ 
+ #include "MiniIOSurface.h"
++#include "MiniFramebufferScale.h"
++#include "MiniFramebufferSwap.h"
+ 
+-extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
++extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
++extern "C" uint32_t redwood_frames_shown;        /* (bsd/sys/redwood_input.h) */
+ 
+ /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
+ enum {
+@@ -63,17 +69,6 @@ enum {
+ 	kFBMethodGetProtectionOptions   = 82,
+ };
+ 
+-/* The swap request (IOMobileFramebufferSwapEnd): 0x46c bytes, of which we read these. */
+-#define SWAP_SIZE               0x46c
+-#define SWAP_ID                 0x50
+-#define SWAP_SURFACE(layer)     (0x54 + 4 * (layer))    /* surface number, 0 = none */
+-#define SWAP_SOURCE(layer)      (0x64 + 16 * (layer))   /* x, y, width, height in the surface */
+-#define SWAP_ENABLED(layer)     (0xa4 + 4 * (layer))
+-#define SWAP_DEST(layer)        (0xc4 + 16 * (layer))   /* x, y, width, height on the display */
+-#define SWAP_LAYERS_SET         0x104                   /* bit per layer given in this swap */
+-#define SWAP_LAYERS_CLEARED     0x108
+-#define SWAP_LAYERS             4
+-
+ #define kFBNotifyVSync          5
+ #define kFBNotifyTypes          8
+ #define kFBRefreshHz            60                      /* unless boot-arg fb_hz says otherwise */
+@@ -88,20 +83,16 @@ enum {
+ static uint64_t gFBLogged[2];           /* selectors already reported */
+ static uint8_t  gFBCalls[128];          /* how many calls of each selector were traced */
+ 
+-/*
+- * The display user space is told about. The system carries the identity of the iPhone X
+- * (see the loader), and iOS knows what screen that phone has: with any other size
+- * MobileGestalt reports an unknown screen class and the user interface has no layout for it.
+- * So the display is always the iPhone's, and a swap scales the picture to the panel that is
+- * really there (in QEMU the loader makes the panel exactly this size and nothing is scaled).
+- * Boot-args fbwidth= and fbheight= change the size reported.
+- */
++/* MobileGestalt needs a matching width, height and pixel density to select a screen class.
++ * Defaults retain the D22 display. fbwidth/fbheight/fbpitch select another profile;
++ * fbpitch=0 retains density scaling for the existing reduced-resolution modes. */
+ #define kFBDefaultWidth         1125
+ #define kFBDefaultHeight        2436
+ #define kFBDotsPerInch          458
+ 
+ static TUNABLE(uint32_t, gFBWidth, "fbwidth", kFBDefaultWidth);
+ static TUNABLE(uint32_t, gFBHeight, "fbheight", kFBDefaultHeight);
++static TUNABLE(uint32_t, gFBPitch, "fbpitch", 0);
+ /*
+  * Boot-arg fbscale=2: the same 375 x 812 points drawn at two pixels a point instead of three.
+  * Everything that is drawn is drawn by the processor, and this is 2.25 times fewer pixels to
+@@ -170,7 +161,7 @@ swapQueue(void)
+  * Boot-arg touch_lat=1: a line for every swap handed over ("tl: s ID at US") and for every frame
+  * put on the panel ("tl: v ID ready US shown US done US": the GPU done with it, its beat come, the
+  * pixels in the panel's memory), in microseconds of mach_absolute_time, for measuring how long a
+- * touch takes to show (tools/latency.py; the touch's own lines: bsd/dev/hakios.input.c).
++ * touch takes to show (tools/latency.py; the touch's own lines: bsd/dev/redwood_input.c).
+  */
+ static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
+ 
+@@ -474,7 +465,7 @@ IOMobileFramebuffer::start(IOService * provider)
+ 
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
+-	setProperty("HakiosWaitsForGPU", kOSBooleanTrue);
++	setProperty("RedwoodWaitsForGPU", kOSBooleanTrue);
+ 	publishModes();
+ 	setName("disp0");
+ 	registerService();
+@@ -560,18 +551,6 @@ IOMobileFramebuffer::defaultSurface(void)
+ 	return fDefaultSurface;
+ }
+ 
+-/*
+- * Two pixels mixed: `w` of 256 of the second. Two of the four channels at a time, in one word.
+- */
+-static inline uint32_t
+-blend(uint32_t a, uint32_t b, uint32_t w)
+-{
+-	uint32_t rb = ((a & 0xff00ff) * (256 - w) + (b & 0xff00ff) * w) >> 8 & 0xff00ff;
+-	uint32_t ga = ((a >> 8 & 0xff00ff) * (256 - w) + (b >> 8 & 0xff00ff) * w) & 0xff00ff00;
+-
+-	return rb | ga;
+-}
+-
+ /*
+  * Where the middle of the `i`th of `out` pixels falls among `in` of them, in 256ths of a pixel,
+  * kept within the first and the last.
+@@ -629,13 +608,7 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 				const uint32_t * lower = (const uint32_t *) (pixels + (size_t) (sy + row + 1) * stride) + sx;
+ 				uint32_t first = fColumn[cx0], last = fColumn[cx1 - 1] + 1 < (uint32_t) sw ? fColumn[cx1 - 1] + 1 : fColumn[cx1 - 1];
+ 
+-				uint32_t * __restrict mixed = blendRow;
+-
+-				for (uint32_t c = first; c <= last; c++) {
+-					uint32_t a = upper[c], b = lower[c];
+-
+-					mixed[c] = a == b ? a : blend(a, b, weight);           /* (most of a screen is the same as next to it) */
+-				}
++				mixRows(upper, lower, blendRow, first, last, weight);
+ 				from = blendRow;
+ 			}
+ 		} else {
+@@ -656,15 +629,7 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 			}
+ 		}
+ 		if (filter) {
+-			const uint32_t * __restrict column = fColumn + cx0;
+-			const uint16_t * __restrict weights = fColumnWeight + cx0;
+-			uint32_t * __restrict out = to + cx0;
+-
+-			for (uint32_t i = 0, n = (uint32_t) (cx1 - cx0); i < n; i++) {
+-				uint32_t c = column[i], w = weights[i], a = from[c];
+-
+-				out[i] = w == 0 || a == from[c + 1] ? a : blend(a, from[c + 1], w);
+-			}
++			scaleRow(from, to + cx0, fColumn + cx0, fColumnWeight + cx0, (uint32_t) (cx1 - cx0), (uint32_t) sw);
+ 		} else {
+ 			for (int32_t x = cx0; x < cx1; x++) {
+ 				to[x] = from[fColumn[x]];
+@@ -867,7 +832,11 @@ IOMobileFramebuffer::present(const uint8_t * swap)
+ 	nanoseconds_to_absolutetime(FRAME_PAUSE * NSEC_PER_MSEC, &pause);
+ 	clock_interval_to_deadline(SWAP_HELD_MS, kMillisecondScale, &deadline);
+ 	if (gTouchLat) {
+-		hakios_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
++		char who[24] = "?";
++
++		proc_selfname(who, sizeof(who));
++		redwood_tl("tl: s %u %d %llu %s at %llu\n", swapWord(swap, SWAP_ID),
++		    proc_pid(current_proc()), (unsigned long long)thread_tid(current_thread()), who, micros(now));
+ 	}
+ 	IOLockLock(fSwapLock);
+ 	fStatSwapsLate += fSwapTime != 0 && now - fSwapTime > period && now - fSwapTime < pause;
+@@ -1044,8 +1013,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 		record(recorded);
+ 	}
+ 	fSwapsShown++;
++	redwood_frames_shown = fSwapsShown;      /* (kern.redwood.frames: what a control run watches) */
+ 	if (gTouchLat) {
+-		hakios_tl("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
++		redwood_tl("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
+ 		    micros(drawn));
+ 	}
+ 	if (layers != fLayersShown) {
+@@ -1317,7 +1287,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		if (args->scalarOutputCount < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
+-		out[0] = kFBDotsPerInch * fOwner->fWidth / kFBDefaultWidth;
++		out[0] = gFBPitch ? gFBPitch : kFBDotsPerInch * fOwner->fWidth / kFBDefaultWidth;
+ 		args->scalarOutputCount = 1;
+ 		return kIOReturnSuccess;
+ 
+@@ -1341,17 +1311,19 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		args->scalarOutputCount = 1;
+ 		return kIOReturnSuccess;
+ 
+-	case kFBMethodSwapEnd:
+-		if (args->structureInput == NULL || args->structureInputSize < SWAP_SIZE) {
+-			IOLog("MiniIOMobileFramebuffer: swap request of %u bytes, expected %u\n", args->structureInputSize, SWAP_SIZE);
++	case kFBMethodSwapEnd: {
++		const uint8_t * swap = miniFramebufferSwapPayload(args->structureInput, args->structureInputSize);
++		if (swap == NULL) {
++			IOLog("MiniIOMobileFramebuffer: unsupported swap request of %u bytes\n", args->structureInputSize);
+ 			return kIOReturnBadArgument;
+ 		}
+-		fOwner->present((const uint8_t *) args->structureInput);
++		fOwner->present(swap);
+ 		return kIOReturnSuccess;
++	}
+ 
+ 	case kFBMethodSwapWait:                         /* a swap is on the screen as soon as it is made */
+ 		if (gTouchLat) {
+-			hakios_tl("tl: w %llu %#llx %#llx at %llu\n", args->scalarInputCount > 0 ? in[0] : 0,
++			redwood_tl("tl: w %llu %#llx %#llx at %llu\n", args->scalarInputCount > 0 ? in[0] : 0,
+ 			    args->scalarInputCount > 1 ? in[1] : 0, args->scalarInputCount > 2 ? in[2] : 0, micros(mach_absolute_time()));
+ 		}
+ 		return kIOReturnSuccess;
+@@ -1473,22 +1445,136 @@ publishDisplayNode(void)
+  * service of this class to appear before it looks for a GPU at all (once per process). An
+  * accelerator without the properties that name its Metal and OpenGL ES drivers is passed
+  * over by both, which leaves CoreAnimation with its software renderer, as before.
++ *
++ * With boot-arg metal=1 a user process may put those two properties here, which is the whole
++ * of what keeps Metal from finding our driver; see setProperties below, and docs/metal.md 10.31
++ * (10.14 for the measurement that made it a boot-arg).
+  */
++
++/* Metal's step 2 reads exactly these two, in this order, off this service (docs/metal.md 1). */
++#define kAcceleratorPluginNameKey      "MetalPluginName"
++#define kAcceleratorPluginClassNameKey "MetalPluginClassName"
++
++static bool gAcceleratorTakesProperties;        /* boot-arg metal=1 */
++
+ class IOAcceleratorES : public IOService
+ {
+ 	OSDeclareDefaultStructors(IOAcceleratorES);
++
++public:
++	virtual IOReturn setProperties(OSObject * properties) APPLE_KEXT_OVERRIDE;
+ };
+ 
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ 
++/*
++ * Switch Metal's own device discovery on, from user space: IORegistryEntrySetCFProperties() with
++ * MetalPluginName and MetalPluginClassName. Metal reads the first (getMetalPluginClassForService,
++ * 0x181a39ba4), builds "/System/Library/Extensions/" + it + ".bundle", opens that with NSBundle
++ * and takes the class the second names; with the first missing it returns nil before it even
++ * reads the second, and that single `cbz` is where the chain breaks on this port today.
++ *
++ * This method is the only thing that was in the way. IORegistryEntry::setProperties is
++ * "return kIOReturnUnsupported" (IORegistryEntry.cpp) and IOService does not override it; the
++ * MAC check in front of the call has no policy to ask, because this kernel registers no iokit
++ * hook (bsd/kern/kern_minimac.c); and this service carries no property whitelist.
++ *
++ * Why it is gated on a boot-arg, which is a measured risk and not caution in general
++ * (docs/metal.md 10.14): the conditions Metal puts on a device object are asserts, not soft
++ * refusals (10.2-10.3). A process that asks Metal and is handed a half-made device does not
++ * degrade to another renderer -- it aborts ("Assertion failed: ([self
++ * conformsToProtocol:@protocol(MTLDeviceSPI)])", "failed assertion _limits.maxColorAttachments
++ * > 0"), and an aborting daemon is restarted by launchd, which is a loop. Published instead at
++ * registerService() time, the properties would exist before launchd, backboardd and SpringBoard
++ * are born, so each of the three would take the Metal road on its first call, with nobody left
++ * to read the log. Behind a boot-arg, a machine that has them is a machine booted on purpose to
++ * have them, and the first such boot is meant to be RC=rc.ios, where launchd is never born.
++ *
++ * An empty string removes a property rather than setting it. That is the way out of the loop
++ * above without a reboot: the properties live only in the registry, so processes started after
++ * they are gone go back to the software road.
++ *
++ * Everything else is refused, and refused whole, before anything is set: every process on the
++ * machine can reach this method and the only thing it exists for is this one switch.
++ */
++IOReturn
++IOAcceleratorES::setProperties(OSObject * properties)
++{
++	OSDictionary * dict = OSDynamicCast(OSDictionary, properties);
++	OSCollectionIterator * keys;
++	OSObject * next;
++	char who[32] = "?";
++
++	if (!gAcceleratorTakesProperties) {
++		static unsigned said;
++
++		if (said++ < 4) {
++			proc_selfname(who, sizeof(who));
++			IOLog("IOAcceleratorES: %s asks to set properties on it; boot-arg metal=1 was not given\n", who);
++		}
++		return kIOReturnUnsupported;
++	}
++	if (dict == NULL || dict->getCount() == 0) {
++		return kIOReturnBadArgument;
++	}
++	keys = OSCollectionIterator::withCollection(dict);
++	if (keys == NULL) {
++		return kIOReturnNoMemory;
++	}
++	proc_selfname(who, sizeof(who));
++	while ((next = keys->getNextObject()) != NULL) {
++		const OSSymbol * key = OSDynamicCast(OSSymbol, next);
++
++		if (key == NULL || (!key->isEqualTo(kAcceleratorPluginNameKey) &&
++		    !key->isEqualTo(kAcceleratorPluginClassNameKey))) {
++			IOLog("IOAcceleratorES: refusing what %s sent: only " kAcceleratorPluginNameKey " and "
++			    kAcceleratorPluginClassNameKey " are taken here\n", who);
++			keys->release();
++			return kIOReturnUnsupported;
++		}
++		if (OSDynamicCast(OSString, dict->getObject(key)) == NULL) {
++			IOLog("IOAcceleratorES: refusing \"%s\" from %s: Metal reads it as a CFString\n",
++			    key->getCStringNoCopy(), who);
++			keys->release();
++			return kIOReturnBadArgument;
++		}
++	}
++	keys->reset();
++	while ((next = keys->getNextObject()) != NULL) {
++		const OSSymbol * key = OSDynamicCast(OSSymbol, next);
++		OSString * value = OSDynamicCast(OSString, dict->getObject(key));
++
++		if (value->getLength() == 0) {
++			removeProperty(key);
++			IOLog("IOAcceleratorES: %s removed by %s\n", key->getCStringNoCopy(), who);
++		} else if (setProperty(key, value)) {
++			IOLog("IOAcceleratorES: %s = %s, set by %s\n", key->getCStringNoCopy(),
++			    value->getCStringNoCopy(), who);
++		} else {
++			IOLog("IOAcceleratorES: %s could not be set\n", key->getCStringNoCopy());
++			keys->release();
++			return kIOReturnNoMemory;
++		}
++	}
++	keys->release();
++	return kIOReturnSuccess;
++}
++
+ static void
+ publishAccelerator(IOService * provider)
+ {
+ 	IOAcceleratorES * accelerator = OSTypeAlloc(IOAcceleratorES);
++	uint32_t metal = 0;
+ 
++	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
+ 	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
+ 		accelerator->setName("sgx");
+ 		accelerator->registerService();
++		/* the first line to look for in the log of such a boot: the gate is open, nothing is set yet */
++		if (gAcceleratorTakesProperties) {
++			IOLog("IOAcceleratorES: metal=%u: this service takes " kAcceleratorPluginNameKey
++			    " and " kAcceleratorPluginClassNameKey " from user space\n", metal);
++		}
+ 	}
+ 	OSSafeReleaseNULL(accelerator);
+ }
+diff --git a/iokit/Kernel/MiniIONetworkStack.cpp b/iokit/Kernel/MiniIONetworkStack.cpp
+index d7dd0e5..a2b963c 100644
+--- a/iokit/Kernel/MiniIONetworkStack.cpp
++++ b/iokit/Kernel/MiniIONetworkStack.cpp
+@@ -4,7 +4,7 @@
+  *
+  * The real one gives the BSD names (en0, en1, ...) to the IONetworkInterface objects of the
+  * drivers, when the interface namer asks. Here interfaces are made with the BSD interface KPI
+- * (bsd/dev/hakios.net.c) and are born with their names, so there is never anything to name.
++ * (bsd/dev/redwood_net.c) and are born with their names, so there is never anything to name.
+  * But the namer wants this object all the same: until it has opened it, it does not say in
+  * configd's store that the registry has gone quiet (the key Plugin:InterfaceNamer, "*QUIET*"),
+  * and gives up only after five minutes ("*TIMEOUT*"). SystemConfiguration's
+diff --git a/iokit/Kernel/MiniIOSurface.cpp b/iokit/Kernel/MiniIOSurface.cpp
+index 5523e85..464e4ef 100644
+--- a/iokit/Kernel/MiniIOSurface.cpp
++++ b/iokit/Kernel/MiniIOSurface.cpp
+@@ -878,10 +878,11 @@ class IOSurfaceRootUserClient : public IOUserClient
+ 	struct minisurf_client_ref *    fRefs;
+ 	uint32_t                        fRefCount;
+ 	uint32_t                        fRefCapacity;
++	minisurf_abi                    fABI;
+ 	IOExternalTrap                  fTraps[kSurfaceTrapCount];
+ 
+ 	struct minisurf_client_ref * findRef(uint32_t sid, bool detached);
+-	struct minisurf_client_ref * addRef(MiniIOSurface * surface);
++	struct minisurf_client_ref * addRef(MiniIOSurface * surface, IOReturn * error);
+ 	void dropRef(struct minisurf_client_ref * ref);
+ 	IOReturn returnSurface(struct minisurf_client_ref * ref, bool known, IOExternalMethodArguments * args);
+ 
+@@ -924,6 +925,7 @@ IOSurfaceRootUserClient::initWithTask(task_t owningTask, void * securityID, UInt
+ 		return false;
+ 	}
+ 	fTask = owningTask;
++	fABI = MINISURF_UNCLAIMED;
+ 	return true;
+ }
+ 
+@@ -989,11 +991,17 @@ IOSurfaceRootUserClient::findRef(uint32_t sid, bool detached)
+ }
+ 
+ struct minisurf_client_ref *
+-IOSurfaceRootUserClient::addRef(MiniIOSurface * surface)
++IOSurfaceRootUserClient::addRef(MiniIOSurface * surface, IOReturn * error)
+ {
+ 	struct minisurf_client_ref * ref;
+-	IOMemoryMap * map;
++	IOMemoryMap * map, * pixelMap = NULL;
+ 
++	minisurf_abi abi = fABI == MINISURF_UNCLAIMED ? MINISURF_ABI16 : fABI;
++	*error = kIOReturnUnsupported;
++	if (!minisurfCanMap(surface->sharedABI, abi)) {
++		return NULL;
++	}
++	*error = kIOReturnNoMemory;
+ 	if (fRefCount == fRefCapacity) {
+ 		uint32_t capacity = fRefCapacity ? fRefCapacity * 2 : 16;
+ 		struct minisurf_client_ref * refs = IONew(struct minisurf_client_ref, capacity);
+@@ -1013,14 +1021,23 @@ IOSurfaceRootUserClient::addRef(MiniIOSurface * surface)
+ 		IOLog("MiniIOSurface: cannot map surface %u (%u bytes) into the client\n", surface->sid, surface->info.allocSize);
+ 		return NULL;
+ 	}
++	if (surface->client != NULL && surface->clientTask != fTask) {
++		pixelMap = surface->client->createMappingInTask(fTask, 0, kIOMapAnywhere);
++		if (pixelMap == NULL) {
++			map->release();
++			return NULL;
++		}
++	}
+ 	ref = &fRefs[fRefCount++];
+ 	bzero(ref, sizeof(*ref));
+ 	ref->surface = surface;
+ 	ref->map = map;
+-	if (surface->client != NULL && surface->clientTask != fTask) {
+-		ref->pixelMap = surface->client->createMappingInTask(fTask, 0, kIOMapAnywhere);
+-	}
++	ref->pixelMap = pixelMap;
++	/* The shared page keeps its first mapped ABI for the surface lifetime. */
++	surface->sharedABI = abi;
++	fABI = abi;
+ 	surfaceHold(surface);
++	*error = kIOReturnSuccess;
+ 	return ref;
+ }
+ 
+@@ -1039,64 +1056,7 @@ IOSurfaceRootUserClient::dropRef(struct minisurf_client_ref * ref)
+ 	surfaceUnhold(s);
+ }
+ 
+-static uint32_t
+-resultSize(const MiniIOSurface * s)
+-{
+-	uint32_t planes = s->info.planeCount ? s->info.planeCount : 1;
+-
+-	return (uint32_t) (sizeof(struct minisurf_result) + planes * sizeof(struct minisurf_plane));
+-}
+-
+-/* Describe the surface to the client. known: it has the surface already, do not build a second view. */
+-IOReturn
+-IOSurfaceRootUserClient::returnSurface(struct minisurf_client_ref * ref, bool known, IOExternalMethodArguments * args)
+-{
+-	MiniIOSurface * s = ref->surface;
+-	uint32_t size = resultSize(s);
+-	struct minisurf_result * r = (struct minisurf_result *) args->structureOutput;
+-	mach_vm_address_t address = ref->map->getAddress();
+-
+-	if (r == NULL || args->structureOutputSize < size) {
+-		return kIOReturnBadArgument;
+-	}
+-	*r = s->info;
+-	memcpy(r + 1, s->planes, size - sizeof(*r));
+-	r->shared = address;
+-	r->aux = address + MINISURF_AUX_OFFSET;
+-	r->base = known ? ~0ULL : s->client == NULL ? address + PAGE_SIZE :
+-	    ref->pixelMap != NULL ? ref->pixelMap->getAddress() : s->clientAddress;
+-	args->structureOutputSize = size;
+-	return kIOReturnSuccess;
+-}
+-
+-IOReturn
+-IOSurfaceRootUserClient::methodInit(IOExternalMethodArguments * args)
+-{
+-	struct {
+-		uint32_t allocAlignMask;
+-		uint32_t rowAlignMask;
+-		uint32_t maxBytesPerRow;
+-		uint32_t maxWidth;
+-		uint32_t maxHeight;
+-		uint16_t reserved;
+-		uint16_t version;
+-	} reply;
+-
+-	static_assert(sizeof(reply) == 0x18, "init reply");
+-	if (args->structureOutput == NULL || args->structureOutputSize < sizeof(reply)) {
+-		return kIOReturnBadArgument;
+-	}
+-	reply.allocAlignMask = (uint32_t) PAGE_MASK;
+-	reply.rowAlignMask = MINISURF_ROW_ALIGN - 1;
+-	reply.maxBytesPerRow = MINISURF_MAX_DIMENSION * 16;
+-	reply.maxWidth = MINISURF_MAX_DIMENSION;
+-	reply.maxHeight = MINISURF_MAX_DIMENSION;
+-	reply.reserved = 0;
+-	reply.version = 1;
+-	memcpy(args->structureOutput, &reply, sizeof(reply));
+-	args->structureOutputSize = sizeof(reply);
+-	return kIOReturnSuccess;
+-}
++#include "MiniIOSurfaceABI.inc"
+ 
+ /* The serialized object in a request, or NULL. */
+ static OSObject *
+@@ -1198,17 +1158,20 @@ IOSurfaceRootUserClient::methodCreate(IOExternalMethodArguments * args)
+ 
+ 	uint64_t mapped_at = mach_absolute_time();
+ 	IOLockLock(gSurfaceLock);
+-	ref = addRef(s);
+-	ret = ref ? returnSurface(ref, false, args) : kIOReturnNoMemory;
++	ref = addRef(s, &ret);
++	if (ref != NULL) {
++		ret = returnSurface(ref, false, args);
++	}
+ 	if (ref != NULL && ret != kIOReturnSuccess) {
+ 		dropRef(ref);
+ 	}
++	uint32_t allocSize = s->info.allocSize;
+ 	surfaceUnhold(s);                       /* the creator's hold; the client's own is in the ref */
+ 	IOLockUnlock(gSurfaceLock);
+ 	mapped_at = mach_absolute_time() - mapped_at;
+ 	OSAddAtomic64((SInt64) (mach_absolute_time() - began), (SInt64 *) &gSurfaceMaking);
+ 	OSIncrementAtomic(&gSurfacesMade);
+-	if (s->info.allocSize >= SURFACE_KEEP_FROM) {
++	if (allocSize >= SURFACE_KEEP_FROM) {
+ 		/* the big ones (the window server's of the whole display): where the time to make one goes, every 5 s */
+ 		static uint64_t since, all, making, mapping;
+ 		static uint32_t count;
+@@ -1252,14 +1215,15 @@ IOSurfaceRootUserClient::methodLookup(IOExternalMethodArguments * args)
+ 	sid = (uint32_t) args->scalarInput[0];
+ 	IOLockLock(gSurfaceLock);
+ 	ref = findRef(sid, false);
++	bool known = ref != NULL;
+ 	if (ref == NULL && sid != 0 && sid < MINISURF_TABLE_SIZE && gSurfaceTable[sid] != NULL) {
+-		ref = addRef(gSurfaceTable[sid]);
+-		if (ref == NULL) {
+-			ret = kIOReturnNoMemory;
+-		}
++		ref = addRef(gSurfaceTable[sid], &ret);
+ 	}
+ 	if (ref != NULL) {
+ 		ret = returnSurface(ref, false, args);
++		if (!known && ret != kIOReturnSuccess) {
++			dropRef(ref);
++		}
+ 	}
+ 	IOLockUnlock(gSurfaceLock);
+ 	return ret;
+@@ -1297,9 +1261,14 @@ IOSurfaceRootUserClient::methodLookupFromPort(IOExternalMethodArguments * args)
+ 	ref = findRef(right->surface->sid, false);
+ 	known = ref != NULL;
+ 	if (ref == NULL) {
+-		ref = addRef(right->surface);
++		ref = addRef(right->surface, &ret);
++	}
++	if (ref != NULL) {
++		ret = returnSurface(ref, known, args);
++		if (!known && ret != kIOReturnSuccess) {
++			dropRef(ref);
++		}
+ 	}
+-	ret = ref ? returnSurface(ref, known, args) : kIOReturnNoMemory;
+ 	IOLockUnlock(gSurfaceLock);
+ 	if (right->surface->traced) {
+ 		char procname[32] = "?";
+@@ -1525,50 +1494,6 @@ IOSurfaceRootUserClient::methodCopyValue(IOExternalMethodArguments * args, const
+ 	return ret;
+ }
+ 
+-/*
+- * Colour space, transfer function and the like: a fixed structure kept in the shared page.
+- * The request: the structure, its size, a mask of the fields that changed, the surface number.
+- */
+-IOReturn
+-IOSurfaceRootUserClient::methodSetBulkAttachments(const uint8_t * in, size_t inSize)
+-{
+-	static const struct {
+-		uint8_t from, to;
+-	} fields[15] = {
+-		{ 0x00, 0x20 }, { 0x20, 0x30 }, { 0x30, 0x38 }, { 0x38, 0x39 }, { 0x39, 0x3a }, { 0x3a, 0x3b }, { 0x3b, 0x3c },
+-		{ 0x3c, 0x3d }, { 0x3d, 0x3e }, { 0x3e, 0x3f }, { 0x3f, 0x40 }, { 0x40, 0x58 }, { 0x58, 0x5c }, { 0x5c, 0x64 },
+-		{ 0x64, 0x65 },
+-	};
+-	uint64_t size, mask;
+-	uint32_t sid;
+-	struct minisurf_client_ref * ref;
+-	IOReturn ret = kIOReturnNotFound;
+-
+-	if (inSize < 0x88) {
+-		return kIOReturnBadArgument;
+-	}
+-	memcpy(&size, in + 0x70, sizeof(size));
+-	memcpy(&mask, in + 0x78, sizeof(mask));
+-	memcpy(&sid, in + 0x80, sizeof(sid));
+-	if (size > 0x70) {
+-		return kIOReturnBadArgument;
+-	}
+-	IOLockLock(gSurfaceLock);
+-	ref = findRef(sid, false);
+-	if (ref != NULL) {
+-		uint8_t * attachments = ref->surface->shared()->attachments;
+-
+-		for (unsigned i = 0; i < 15; i++) {
+-			if ((mask & (1ULL << i)) && fields[i].to <= size) {
+-				memcpy(attachments + fields[i].from, in + fields[i].from, fields[i].to - fields[i].from);
+-			}
+-		}
+-		ret = kIOReturnSuccess;
+-	}
+-	IOLockUnlock(gSurfaceLock);
+-	return ret;
+-}
+-
+ IOReturn
+ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
+     IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
+@@ -1657,7 +1582,7 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		IOLockLock(gSurfaceLock);
+ 		ref = findRef((uint32_t) args->scalarInput[0], false);
+ 		if (ref != NULL) {
+-			ref->surface->shared()->ycbcrMatrix = (uint32_t) args->scalarInput[1];
++			minisurfSetYCbCrMatrix(ref->surface->shared(), fABI, (uint32_t) args->scalarInput[1]);
+ 		}
+ 		IOLockUnlock(gSurfaceLock);
+ 		return ref ? kIOReturnSuccess : kIOReturnNotFound;
+diff --git a/iokit/Kernel/MiniIOSurface.h b/iokit/Kernel/MiniIOSurface.h
+index feccca0..44ed26e 100644
+--- a/iokit/Kernel/MiniIOSurface.h
++++ b/iokit/Kernel/MiniIOSurface.h
+@@ -3,7 +3,7 @@
+  * window server and its clients to share pixel buffers on a machine without Apple hardware.
+  *
+  * The protocol (user client selectors, traps and the layout of the structures the kernel
+- * hands to IOSurface.framework) was worked out from the user-space side of iOS 16.5.
++ * hands to IOSurface.framework) follows iOS 16.5 (20F66) and iOS 26.6.2 (23G90).
+  */
+ #ifndef _IOKIT_MINIIOSURFACE_H
+ #define _IOKIT_MINIIOSURFACE_H
+@@ -14,64 +14,9 @@
+ 
+ #include "MiniDrivers.h"
+ 
+-#define MINISURF_MAX_PLANES     4
+-#define MINISURF_RESULT_MAX     0xa68           /* what IOSurface.framework reserves for a result */
++#include "MiniIOSurfaceABI.h"
+ 
+-/* One plane, as IOSurface.framework reads it (0x80 bytes). */
+-struct minisurf_plane {
+-	uint32_t width;                         /* 0x00 */
+-	uint32_t height;                        /* 0x04 */
+-	uint32_t reserved08;
+-	uint32_t offset;                        /* 0x0c from the base address */
+-	uint32_t bytesPerRow;                   /* 0x10 */
+-	uint32_t size;                          /* 0x14 */
+-	uint16_t bytesPerElement;               /* 0x18 */
+-	uint8_t  elementWidth;                  /* 0x1a */
+-	uint8_t  elementHeight;                 /* 0x1b */
+-	uint8_t  componentCount;                /* 0x1c */
+-	uint8_t  addressFormat;                 /* 0x1d */
+-	uint8_t  reserved1e[2];
+-	uint8_t  componentBitDepth[4];          /* 0x20 */
+-	uint8_t  componentBitOffset[4];         /* 0x24 */
+-	uint8_t  componentName[4];              /* 0x28 */
+-	uint8_t  componentType[4];              /* 0x2c */
+-	uint8_t  componentRange[4];             /* 0x30 */
+-	uint8_t  reserved34[0x20];
+-	uint8_t  compression;                   /* 0x54: 1 = compressed, then there is no base address */
+-	uint8_t  reserved55[0x1b];
+-	uint32_t extendedPixels[4];             /* 0x70 */
+-};
+-
+-/* What "create" and the lookups return: this header, then the planes (at least one). */
+-struct minisurf_result {
+-	uint64_t base;                          /* 0x00 where the memory is mapped in the client */
+-	uint64_t shared;                        /* 0x08 struct minisurf_shared, mapped in the client */
+-	uint64_t aux;                           /* 0x10 struct minisurf_aux, mapped in the client */
+-	uint32_t sid;                           /* 0x18 */
+-	uint32_t allocSize;                     /* 0x1c */
+-	uint32_t width;                         /* 0x20 */
+-	uint32_t height;                        /* 0x24 */
+-	uint32_t bytesPerRow;                   /* 0x28 */
+-	uint32_t offset;                        /* 0x2c */
+-	uint32_t pixelFormat;                   /* 0x30 */
+-	uint32_t reserved34;
+-	uint32_t planeCount;                    /* 0x38 */
+-	uint32_t reserved3c;
+-	uint16_t bytesPerElement;               /* 0x40 */
+-	uint8_t  elementWidth;                  /* 0x42 */
+-	uint8_t  elementHeight;                 /* 0x43 */
+-	uint32_t cacheMode;                     /* 0x44 */
+-	uint32_t lockSeed;                      /* 0x48 the client keeps the seed of its last lock here */
+-	uint8_t  subsampling;                   /* 0x4c */
+-	uint8_t  prohibitUseCount;              /* 0x4d */
+-	uint16_t reserved4e;
+-	uint32_t parentID;                      /* 0x50 */
+-	uint32_t sliceCount;                    /* 0x54 */
+-	uint64_t traceID;                       /* 0x58 */
+-	uint64_t protectionOptions;             /* 0x60 */
+-};
+-
+-/* State that every client reads straight from memory shared with the kernel. */
++/* Common shared fields retain these offsets; ABI helpers access YCbCr and attachments. */
+ struct minisurf_shared {
+ 	uint64_t registryID;                    /* 0x00 */
+ 	uint16_t accelID;                       /* 0x08 */
+@@ -104,6 +49,7 @@ class MiniIOSurface : public OSObject
+ 
+ public:
+ 	uint32_t                        sid;
++	minisurf_abi                    sharedABI;      /* fixed by the first successful client mapping */
+ 	uint32_t                        holders;        /* clients, send rights, kernel users */
+ 	IOBufferMemoryDescriptor *      memory;         /* one page of shared state, then the pixels */
+ 	uint8_t *                       kbase;          /* the same, in the kernel */
+@@ -117,7 +63,7 @@ public:
+ 	task_t                          clientTask;     /* whose memory it is (not held: only compared) */
+ 	mach_vm_address_t               clientAddress;  /* ... and where it is there */
+ 	uint8_t *                       kpixels;        /* where the pixel memory starts in the kernel, either way */
+-	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; hakios.gpu.cpp) */
++	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; RedwoodGPU.cpp) */
+ 	struct minisurf_result          info;           /* addresses not filled in */
+ 	struct minisurf_plane           planes[MINISURF_MAX_PLANES];
+ 	OSDictionary *                  values;
+@@ -128,6 +74,7 @@ public:
+ 	virtual bool
+ 	init(void) APPLE_KEXT_OVERRIDE
+ 	{
++		sharedABI = MINISURF_UNCLAIMED;
+ 		return OSObject::init();
+ 	}
+ 	virtual void free(void) APPLE_KEXT_OVERRIDE;
+@@ -163,7 +110,7 @@ MiniIOSurface * MiniIOSurfaceCopy(uint32_t sid);
+ void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t * freed, uint64_t * freeing, uint32_t * again);
+ /* Clear the memory that is kept of surfaces that are gone, for the next ones: when the caller has a moment. */
+ void            MiniIOSurfaceClearKept(void);
+-/* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (hakios.gpu.cpp). */
++/* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (RedwoodGPU.cpp). */
+ bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
+ MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
+ void            MiniIOSurfaceDrop(MiniIOSurface * surface);
+diff --git a/iokit/Kernel/MiniIOSurfaceABI.h b/iokit/Kernel/MiniIOSurfaceABI.h
+new file mode 100644
+index 0000000..2a3bc40
+--- /dev/null
++++ b/iokit/Kernel/MiniIOSurfaceABI.h
+@@ -0,0 +1,232 @@
++#ifndef _MINI_IOSURFACE_ABI_H
++#define _MINI_IOSURFACE_ABI_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define MINISURF_MAX_PLANES     4
++#define MINISURF_RESULT_MAX     0xa68           /* iOS 16.5 result capacity */
++
++/* Internal plane description and iOS 16.5 wire layout (0x80 bytes). */
++struct minisurf_plane {
++	uint32_t width;                         /* 0x00 */
++	uint32_t height;                        /* 0x04 */
++	uint32_t reserved08;
++	uint32_t offset;                        /* 0x0c from the base address */
++	uint32_t bytesPerRow;                   /* 0x10 */
++	uint32_t size;                          /* 0x14 */
++	uint16_t bytesPerElement;               /* 0x18 */
++	uint8_t  elementWidth;                  /* 0x1a */
++	uint8_t  elementHeight;                 /* 0x1b */
++	uint8_t  componentCount;                /* 0x1c */
++	uint8_t  addressFormat;                 /* 0x1d */
++	uint8_t  reserved1e[2];
++	uint8_t  componentBitDepth[4];          /* 0x20 */
++	uint8_t  componentBitOffset[4];         /* 0x24 */
++	uint8_t  componentName[4];              /* 0x28 */
++	uint8_t  componentType[4];              /* 0x2c */
++	uint8_t  componentRange[4];             /* 0x30 */
++	uint8_t  reserved34[0x20];
++	uint8_t  compression;                   /* 0x54: 1 = compressed, then there is no base address */
++	uint8_t  reserved55[0x1b];
++	uint32_t extendedPixels[4];             /* 0x70 */
++};
++
++/* Internal description and iOS 16.5 result header, followed by at least one plane. */
++struct minisurf_result {
++	uint64_t base;                          /* 0x00 where the memory is mapped in the client */
++	uint64_t shared;                        /* 0x08 struct minisurf_shared, mapped in the client */
++	uint64_t aux;                           /* 0x10 struct minisurf_aux, mapped in the client */
++	uint32_t sid;                           /* 0x18 */
++	uint32_t allocSize;                     /* 0x1c */
++	uint32_t width;                         /* 0x20 */
++	uint32_t height;                        /* 0x24 */
++	uint32_t bytesPerRow;                   /* 0x28 */
++	uint32_t offset;                        /* 0x2c */
++	uint32_t pixelFormat;                   /* 0x30 */
++	uint32_t reserved34;
++	uint32_t planeCount;                    /* 0x38 */
++	uint32_t reserved3c;
++	uint16_t bytesPerElement;               /* 0x40 */
++	uint8_t  elementWidth;                  /* 0x42 */
++	uint8_t  elementHeight;                 /* 0x43 */
++	uint32_t cacheMode;                     /* 0x44 */
++	uint32_t lockSeed;                      /* 0x48 the client keeps the seed of its last lock here */
++	uint8_t  subsampling;                   /* 0x4c */
++	uint8_t  prohibitUseCount;              /* 0x4d */
++	uint16_t reserved4e;
++	uint32_t parentID;                      /* 0x50 */
++	uint32_t sliceCount;                    /* 0x54 */
++	uint64_t traceID;                       /* 0x58 */
++	uint64_t protectionOptions;             /* 0x60 */
++};
++
++
++/* The internal description retains 20F66 fields; 23G90 widens its wire sizes. */
++enum minisurf_abi { MINISURF_UNCLAIMED, MINISURF_ABI16, MINISURF_ABI26 };
++
++static inline minisurf_abi
++minisurfInitABI(uint32_t size)
++{
++    return size == 0x18 ? MINISURF_ABI16 : size == 0x28 ? MINISURF_ABI26 : MINISURF_UNCLAIMED;
++}
++
++static inline void
++minisurfPut32(uint8_t * out, unsigned offset, uint32_t value)
++{
++    __builtin_memcpy(out + offset, &value, sizeof(value));
++}
++
++static inline void
++minisurfPut64(uint8_t * out, unsigned offset, uint64_t value)
++{
++    __builtin_memcpy(out + offset, &value, sizeof(value));
++}
++
++static inline bool
++minisurfInitReply(void * output, uint32_t size, uint32_t allocMask, uint32_t rowMask, uint32_t maxDimension)
++{
++    minisurf_abi abi = minisurfInitABI(size);
++    if (output == NULL || abi == MINISURF_UNCLAIMED) {
++        return false;
++    }
++    uint8_t * out = (uint8_t *) output;
++    __builtin_memset(out, 0, size);
++    minisurfPut32(out, 0, allocMask);
++    minisurfPut32(out, 4, rowMask);
++    uint16_t version = 1;
++    if (abi == MINISURF_ABI26) {
++        minisurfPut64(out, 8, (uint64_t) maxDimension * 16);
++        minisurfPut64(out, 0x10, maxDimension);
++        minisurfPut64(out, 0x18, maxDimension);
++        __builtin_memcpy(out + 0x22, &version, sizeof(version));
++    } else {
++        minisurfPut32(out, 8, maxDimension * 16);
++        minisurfPut32(out, 0xc, maxDimension);
++        minisurfPut32(out, 0x10, maxDimension);
++        __builtin_memcpy(out + 0x16, &version, sizeof(version));
++    }
++    return true;
++}
++
++static inline uint32_t
++minisurfResultSize(minisurf_abi abi, uint32_t planeCount)
++{
++    if (planeCount > MINISURF_MAX_PLANES) {
++        return 0;
++    }
++    uint32_t planes = planeCount ? planeCount : 1;
++    return abi == MINISURF_ABI26 ? 0x88 + planes * 0x98 :
++        abi == MINISURF_ABI16 ? sizeof(minisurf_result) + planes * sizeof(minisurf_plane) : 0;
++}
++
++/* Returns zero before writing if the output cannot hold the complete description. */
++static inline uint32_t
++minisurfWriteResult(void * output, uint32_t capacity, minisurf_abi abi,
++    const minisurf_result * info, const minisurf_plane * planes)
++{
++    uint32_t size = minisurfResultSize(abi, info->planeCount);
++    if (output == NULL || size == 0 || capacity < size) {
++        return 0;
++    }
++    uint8_t * out = (uint8_t *) output;
++    if (abi == MINISURF_ABI16) {
++        __builtin_memcpy(out, info, sizeof(*info));
++        __builtin_memcpy(out + sizeof(*info), planes, size - sizeof(*info));
++        return size;
++    }
++    __builtin_memset(out, 0, size);
++    minisurfPut64(out, 0, info->base);
++    minisurfPut64(out, 8, info->shared);
++    minisurfPut64(out, 0x10, info->aux);
++    minisurfPut32(out, 0x18, info->sid);
++    minisurfPut64(out, 0x20, info->allocSize);
++    minisurfPut64(out, 0x28, info->width);
++    minisurfPut64(out, 0x30, info->height);
++    minisurfPut64(out, 0x38, info->bytesPerRow);
++    minisurfPut64(out, 0x40, info->offset);
++    minisurfPut32(out, 0x48, info->pixelFormat);
++    minisurfPut32(out, 0x58, info->planeCount);
++    __builtin_memcpy(out + 0x60, &info->bytesPerElement, 4);
++    minisurfPut32(out, 0x64, info->cacheMode);
++    minisurfPut32(out, 0x68, info->lockSeed);
++    out[0x6c] = info->subsampling;
++    out[0x6d] = info->prohibitUseCount;
++    minisurfPut32(out, 0x70, info->parentID);
++    minisurfPut32(out, 0x74, info->sliceCount);
++    minisurfPut64(out, 0x78, info->traceID);
++    minisurfPut64(out, 0x80, info->protectionOptions);
++    uint32_t count = info->planeCount ? info->planeCount : 1;
++    for (uint32_t i = 0; i < count; ++i) {
++        uint8_t * p = out + 0x88 + i * 0x98;
++        minisurfPut64(p, 0, planes[i].width);
++        minisurfPut64(p, 8, planes[i].height);
++        minisurfPut64(p, 0x18, planes[i].offset);
++        minisurfPut64(p, 0x20, planes[i].bytesPerRow);
++        minisurfPut64(p, 0x28, planes[i].size);
++        __builtin_memcpy(p + 0x30, &planes[i].bytesPerElement, 0x1c);
++        p[0x6c] = planes[i].compression;
++        __builtin_memcpy(p + 0x88, planes[i].extendedPixels, sizeof(planes[i].extendedPixels));
++    }
++    return size;
++}
++
++static inline bool
++minisurfCanMap(minisurf_abi surface, minisurf_abi client)
++{
++    return (client == MINISURF_ABI16 || client == MINISURF_ABI26) &&
++        (surface == MINISURF_UNCLAIMED || surface == client);
++}
++
++static inline uint8_t *
++minisurfAttachments(void * shared, minisurf_abi abi)
++{
++    return (uint8_t *) shared + (abi == MINISURF_ABI26 ? 0x34 : 0x30);
++}
++
++static inline void
++minisurfSetYCbCrMatrix(void * shared, minisurf_abi abi, uint32_t value)
++{
++    if (abi == MINISURF_ABI26) {
++        ((uint8_t *) shared)[0x6e] = (uint8_t) value;
++    } else {
++        minisurfPut32((uint8_t *) shared, 0x24, value);
++    }
++}
++
++/* 23G90 selector 27 adds seven attachment fields and moves the request suffix. */
++static inline bool
++minisurfBulkInput(minisurf_abi abi, const uint8_t * in, size_t inSize,
++    uint64_t * size, uint64_t * mask, uint32_t * sid)
++{
++    unsigned suffix = abi == MINISURF_ABI26 ? 0x88 : 0x70;
++    unsigned limit = abi == MINISURF_ABI26 ? 0x84 : 0x70;
++    if (in == NULL || inSize < suffix + 0x18) {
++        return false;
++    }
++    __builtin_memcpy(size, in + suffix, sizeof(*size));
++    __builtin_memcpy(mask, in + suffix + 8, sizeof(*mask));
++    __builtin_memcpy(sid, in + suffix + 16, sizeof(*sid));
++    return *size <= limit;
++}
++
++static inline void
++minisurfApplyBulk(void * shared, minisurf_abi abi, const uint8_t * in, uint64_t size, uint64_t mask)
++{
++    static const struct { uint8_t from, to; } fields[] = {
++        {0x00, 0x20}, {0x20, 0x30}, {0x30, 0x38}, {0x38, 0x39}, {0x39, 0x3a},
++        {0x3a, 0x3b}, {0x3b, 0x3c}, {0x3c, 0x3d}, {0x3d, 0x3e}, {0x3e, 0x3f},
++        {0x3f, 0x40}, {0x40, 0x58}, {0x58, 0x5c}, {0x5c, 0x64}, {0x64, 0x65},
++        {0x68, 0x70}, {0x70, 0x74}, {0x65, 0x66}, {0x66, 0x67}, {0x74, 0x80},
++        {0x80, 0x82}, {0x82, 0x84},
++    };
++    uint8_t * out = minisurfAttachments(shared, abi);
++    unsigned count = abi == MINISURF_ABI26 ? 22 : 15;
++    for (unsigned i = 0; i < count; ++i) {
++        if ((mask & (1ULL << i)) && fields[i].to <= size) {
++            __builtin_memcpy(out + fields[i].from, in + fields[i].from, fields[i].to - fields[i].from);
++        }
++    }
++}
++
++#endif /* _MINI_IOSURFACE_ABI_H */
+diff --git a/iokit/Kernel/MiniIOSurfaceABI.inc b/iokit/Kernel/MiniIOSurfaceABI.inc
+new file mode 100644
+index 0000000..9c0239b
+--- /dev/null
++++ b/iokit/Kernel/MiniIOSurfaceABI.inc
+@@ -0,0 +1,57 @@
++/* User-client serialization and the fields whose shared-page offsets vary by ABI. */
++IOReturn
++IOSurfaceRootUserClient::returnSurface(struct minisurf_client_ref * ref, bool known, IOExternalMethodArguments * args)
++{
++	MiniIOSurface * s = ref->surface;
++	struct minisurf_result result = s->info;
++	mach_vm_address_t address = ref->map->getAddress();
++
++	result.shared = address;
++	result.aux = address + MINISURF_AUX_OFFSET;
++	result.base = known ? ~0ULL : s->client == NULL ? address + PAGE_SIZE :
++	    ref->pixelMap != NULL ? ref->pixelMap->getAddress() : s->clientAddress;
++	uint32_t size = minisurfWriteResult(args->structureOutput, args->structureOutputSize, fABI, &result, s->planes);
++	if (size == 0) {
++		return kIOReturnBadArgument;
++	}
++	args->structureOutputSize = size;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++IOSurfaceRootUserClient::methodInit(IOExternalMethodArguments * args)
++{
++	minisurf_abi abi = minisurfInitABI(args->structureOutputSize);
++
++	IOLockLock(gSurfaceLock);
++	if ((fABI != MINISURF_UNCLAIMED && fABI != abi) || !minisurfInitReply(args->structureOutput,
++	    args->structureOutputSize, (uint32_t) PAGE_MASK, MINISURF_ROW_ALIGN - 1, MINISURF_MAX_DIMENSION)) {
++		IOLockUnlock(gSurfaceLock);
++		return kIOReturnBadArgument;
++	}
++	fABI = abi;
++	IOLockUnlock(gSurfaceLock);
++	return kIOReturnSuccess;
++}
++
++IOReturn
++IOSurfaceRootUserClient::methodSetBulkAttachments(const uint8_t * in, size_t inSize)
++{
++	uint64_t size, mask;
++	uint32_t sid;
++	struct minisurf_client_ref * ref;
++	IOReturn ret = kIOReturnNotFound;
++
++	IOLockLock(gSurfaceLock);
++	if (!minisurfBulkInput(fABI, in, inSize, &size, &mask, &sid)) {
++		IOLockUnlock(gSurfaceLock);
++		return kIOReturnBadArgument;
++	}
++	ref = findRef(sid, false);
++	if (ref != NULL) {
++		minisurfApplyBulk(ref->surface->shared(), fABI, in, size, mask);
++		ret = kIOReturnSuccess;
++	}
++	IOLockUnlock(gSurfaceLock);
++	return ret;
++}
+diff --git a/iokit/Kernel/RedwoodBattery.cpp b/iokit/Kernel/RedwoodBattery.cpp
+new file mode 100644
+index 0000000..87223c2
+--- /dev/null
++++ b/iokit/Kernel/RedwoodBattery.cpp
+@@ -0,0 +1,230 @@
++/*
++ * RedwoodBattery: the phone's battery as iOS looks for it, an IOPMPowerSource.
++ *
++ * powerd finds every service of the class IOPMPowerSource (it calls the first "InternalBattery-0"),
++ * listens for its kIOPMMessageBatteryStatusHasChanged and then reads its properties: whether a
++ * battery is installed, CurrentCapacity and MaxCapacity (without both it gives up on the battery),
++ * whether a charger is connected and charging, voltage, current, cycles, the charger's details.
++ * From them it makes the power sources list (IOPSCopyPowerSourcesInfo) and posts its notifications,
++ * and everything else follows from that: the status bar's battery, the lock screen's "Charging",
++ * the Batteries widget, Settings > Battery.
++ *
++ * What the values are comes from the audio DSP's battery manager (bsd/dev/redwood_adsp.c,
++ * with adsp=1, unless battmgr=0), by way of bsd/dev/redwood_battery.c, which calls
++ * RedwoodBatteryReport() with every reading; the first one makes the service. Nothing here asks
++ * the charger anything or tells it anything.
++ *
++ * As on Apple's newer batteries, CurrentCapacity is the percentage that the fuel gauge shows (and
++ * MaxCapacity 100); the charges in mAh are AppleRawCurrentCapacity, AppleRawMaxCapacity (what the
++ * gauge has learnt a full charge to be), NominalChargeCapacity and DesignCapacity.
++ */
++
++#include <IOKit/IOLib.h>
++#include <IOKit/IOPlatformExpert.h>
++#include <IOKit/pwr_mgt/IOPM.h>
++#include <IOKit/pwr_mgt/IOPMPowerSource.h>
++#include <libkern/c++/OSBoolean.h>
++#include <libkern/c++/OSDictionary.h>
++#include <libkern/c++/OSNumber.h>
++#include <libkern/c++/OSSymbol.h>
++
++/* The same as struct redwood_battery_state in bsd/sys/redwood_input.h, which is not seen from here. */
++struct redwood_battery_state {
++	uint32_t size;
++	int32_t percent_hundredths;
++	int32_t voltage_uv;
++	int32_t current_ua;             /* more than 0 while the battery takes charge */
++	int32_t temperature_hundredths;
++	int32_t present, external, status;
++	int32_t charge_uah, full_uah, design_uah, cycles;
++	int32_t usb_type;
++	int32_t usb_voltage_uv, usb_current_ua;
++};
++
++extern "C" void RedwoodBatteryReport(const void * state, unsigned size);
++
++class RedwoodBattery : public IOPMPowerSource
++{
++	OSDeclareDefaultStructors(RedwoodBattery);
++
++public:
++	void report(const struct redwood_battery_state * b);
++
++private:
++	void number(const char * key, long long value);
++	void flag(const char * key, bool value);
++	void object(const char * key, OSObject * value);
++};
++
++OSDefineMetaClassAndStructors(RedwoodBattery, IOPMPowerSource);
++
++static RedwoodBattery * battery;
++
++void
++RedwoodBattery::number(const char * key, long long value)
++{
++	const OSSymbol * symbol = OSSymbol::withCString(key);
++	OSNumber * n = OSNumber::withNumber((unsigned long long) value, 32);
++
++	if (symbol != NULL && n != NULL) {
++		setPSProperty(symbol, n);
++	}
++	OSSafeReleaseNULL(n);
++	OSSafeReleaseNULL(symbol);
++}
++
++void
++RedwoodBattery::flag(const char * key, bool value)
++{
++	const OSSymbol * symbol = OSSymbol::withCString(key);
++
++	if (symbol != NULL) {
++		setPSProperty(symbol, value ? kOSBooleanTrue : kOSBooleanFalse);
++	}
++	OSSafeReleaseNULL(symbol);
++}
++
++void
++RedwoodBattery::object(const char * key, OSObject * value)
++{
++	const OSSymbol * symbol = OSSymbol::withCString(key);
++
++	if (symbol != NULL && value != NULL) {
++		setPSProperty(symbol, value);
++	}
++	OSSafeReleaseNULL(symbol);
++}
++
++/*
++ * What iOS calls the charger by (IOPSKeysPrivate.h's kIOPSFamilyCode*, iokit_family_err(sub_iokit_usb, n)),
++ * from Linux's POWER_SUPPLY_USB_TYPE_*, as the DSP gives it.
++ */
++static unsigned
++family_code(int usb_type)
++{
++	switch (usb_type) {
++	case 1: return 0xe0004000;      /* SDP, a computer's port: kIOPSFamilyCodeUSBHost */
++	case 2: return 0xe0004004;      /* DCP, a charger: kIOPSFamilyCodeUSBChargingPortDedicated */
++	case 3: return 0xe0004005;      /* CDP, a computer's charging port: kIOPSFamilyCodeUSBChargingPortDownstream */
++	case 5: return 0xe0004009;      /* USB-C: kIOPSFamilyCodeUSBCTypeC */
++	case 6: case 7: case 8: return 0xe000400a;      /* USB Power Delivery: kIOPSFamilyCodeUSBCPD */
++	default: return 0xe0004007;     /* kIOPSFamilyCodeUSBUnknown */
++	}
++}
++
++void
++RedwoodBattery::report(const struct redwood_battery_state * b)
++{
++	int percent = (b->percent_hundredths + 50) / 100;
++	bool charging = b->external && b->status == 1;          /* POWER_SUPPLY_STATUS_CHARGING */
++
++	percent = percent < 0 ? 0 : percent > 100 ? 100 : percent;
++	setBatteryInstalled(b->present != 0);
++	setExternalConnected(b->external != 0);
++	setExternalChargeCapable(b->external != 0);
++	setIsCharging(charging);
++	flag("FullyCharged", b->external && (b->status == 4 || percent == 100));    /* POWER_SUPPLY_STATUS_FULL */
++	flag("AppleRawExternalConnected", b->external != 0);
++	setCurrentCapacity((unsigned) percent);
++	setMaxCapacity(100);
++	setVoltage((unsigned) (b->voltage_uv / 1000));
++	setAmperage(b->current_ua / 1000);
++	number("InstantAmperage", b->current_ua / 1000);
++	number("Temperature", b->temperature_hundredths);
++	if (b->charge_uah > 0) {
++		number("AppleRawCurrentCapacity", b->charge_uah / 1000);
++	}
++	if (b->full_uah > 0) {
++		number("AppleRawMaxCapacity", b->full_uah / 1000);
++		number("NominalChargeCapacity", b->full_uah / 1000);
++	}
++	if (b->design_uah > 0) {
++		number("DesignCapacity", b->design_uah / 1000);
++	}
++	if (b->cycles > 0) {
++		setCycleCount((unsigned) b->cycles);
++	}
++
++	if (b->external) {
++		OSDictionary * adapter = OSDictionary::withCapacity(6);
++		long long mv = b->usb_voltage_uv / 1000, ma = b->usb_current_ua / 1000;
++		OSNumber * n;
++
++		if (adapter != NULL) {
++			if ((n = OSNumber::withNumber((unsigned long long) ((mv * ma + 500000) / 1000000), 32)) != NULL) {
++				adapter->setObject(kIOPMPSAdapterDetailsWattsKey, n);
++				n->release();
++			}
++			if ((n = OSNumber::withNumber((unsigned long long) ma, 32)) != NULL) {
++				adapter->setObject(kIOPMPSAdapterDetailsAmperageKey, n);
++				n->release();
++			}
++			if ((n = OSNumber::withNumber((unsigned long long) mv, 32)) != NULL) {
++				adapter->setObject(kIOPMPSAdapterDetailsVoltage, n);
++				n->release();
++			}
++			if ((n = OSNumber::withNumber((unsigned long long) family_code(b->usb_type), 32)) != NULL) {
++				adapter->setObject(kIOPMPSAdapterDetailsFamilyKey, n);
++				n->release();
++			}
++			adapter->setObject("IsWireless", kOSBooleanFalse);
++			object(kIOPMPSAdapterDetailsKey, adapter);
++			adapter->release();
++		}
++	} else {
++		OSDictionary * none = OSDictionary::withCapacity(1);
++		OSNumber * n = OSNumber::withNumber(0ULL, 32);    /* kIOPSFamilyCodeDisconnected */
++
++		if (none != NULL && n != NULL) {
++			none->setObject(kIOPMPSAdapterDetailsFamilyKey, n);
++			object(kIOPMPSAdapterDetailsKey, none);
++		}
++		OSSafeReleaseNULL(n);
++		OSSafeReleaseNULL(none);
++	}
++	updateStatus();
++}
++
++/* With every reading of the battery (bsd/dev/redwood_battery.c); the first one makes the service. One caller at a time. */
++void
++RedwoodBatteryReport(const void * state, unsigned size)
++{
++	const struct redwood_battery_state * b = (const struct redwood_battery_state *) state;
++	IOService * platform;
++
++	if (size != sizeof(struct redwood_battery_state) || b->size != sizeof(struct redwood_battery_state)) {
++		static bool said;
++
++		if (!said) {
++			said = true;
++			IOLog("RedwoodBattery: the battery's state is %u bytes, not %lu: bsd/sys/redwood_input.h and this file disagree\n",
++			    size, sizeof(struct redwood_battery_state));
++		}
++		return;
++	}
++	if (battery == NULL) {
++		RedwoodBattery * made = OSTypeAlloc(RedwoodBattery);
++
++		if ((platform = IOService::getPlatform()) == NULL || made == NULL || !made->init()) {
++			OSSafeReleaseNULL(made);
++			return;
++		}
++		made->report(b);        /* (the properties are there before anybody finds the service) */
++		if (!made->attach(platform)) {
++			made->release();
++			return;
++		}
++		made->setName("RedwoodBattery");
++		if (!made->start(platform)) {
++			made->detach(platform);
++			made->release();
++			return;
++		}
++		made->registerService();
++		battery = made;
++		IOLog("RedwoodBattery: the battery's power source is up: %d%%, %s\n", (b->percent_hundredths + 50) / 100,
++		    b->external ? (b->status == 1 ? "charging" : "on a charger, not charging") : "not on a charger");
++		return;
++	}
++	battery->report(b);
++}
+diff --git a/iokit/Kernel/RedwoodWLAN.cpp b/iokit/Kernel/RedwoodWLAN.cpp
+new file mode 100644
+index 0000000..89d8840
+--- /dev/null
++++ b/iokit/Kernel/RedwoodWLAN.cpp
+@@ -0,0 +1,137 @@
++/*
++ * RedwoodWLAN: the registry entries by which iOS finds the Wi-Fi interface.
++ *
++ * en0 is made with the BSD interface KPI (bsd/dev/redwood_net.c) and has no IOKit object behind
++ * it of its own; iOS looks for two, as IO80211Family would have made them:
++ *
++ *   - wifid's device is whatever service has the property IO80211InterfaceRole =
++ *     "Infrastructure", and IO80211.framework binds to an interface through a service whose
++ *     IOInterfaceName is the interface's name. The service has no user client, on purpose:
++ *     the framework's attempt to open one fails, it says "Falling back to IOCTL path", and
++ *     from then on every request is an ioctl on a socket, which bsd/dev/redwood_apple80211.c
++ *     answers.
++ *   - SystemConfiguration (SCNetworkInterfaceCopyAll) lists the network interfaces it finds as
++ *     objects of the class IONetworkInterface, and calls one a Wi-Fi interface when its parent
++ *     is of the class IO80211Controller; type, unit, name and built-in-ness are properties of
++ *     the interface, the hardware address one of the controller. configd makes a network
++ *     service (DHCP and the rest) for an interface it has listed, and only an interface with a
++ *     service can be the one the system routes through -- which wifid waits for after a join
++ *     ("failed to become routable interface") before Settings ticks the network.
++ *
++ * So: a controller of the class IO80211Controller under the platform, and below it one object
++ * that is both, an IONetworkInterface with wifid's properties. Both classes are ours, named as
++ * IO80211Family and IONetworkingFamily name theirs; neither has anything but properties.
++ */
++
++#include <IOKit/IOLib.h>
++#include <IOKit/IOPlatformExpert.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <libkern/c++/OSData.h>
++#include <libkern/c++/OSNumber.h>
++
++extern "C" void RedwoodWLANStart(const char * interface, const uint8_t * address);
++
++class IO80211Controller : public IOService
++{
++	OSDeclareDefaultStructors(IO80211Controller);
++};
++
++OSDefineMetaClassAndStructors(IO80211Controller, IOService);
++
++class IONetworkInterface : public IOService
++{
++	OSDeclareDefaultStructors(IONetworkInterface);
++};
++
++OSDefineMetaClassAndStructors(IONetworkInterface, IOService);
++
++class RedwoodWLAN : public IONetworkInterface
++{
++	OSDeclareDefaultStructors(RedwoodWLAN);
++
++public:
++	virtual IOReturn newUserClient(task_t owningTask, void * securityID, UInt32 type, OSDictionary * properties,
++	    IOUserClient ** handler) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(RedwoodWLAN, IONetworkInterface);
++
++/* There is none (see the top); that somebody asked shows that the service was found. */
++IOReturn
++RedwoodWLAN::newUserClient(task_t owningTask, void * securityID, UInt32 type, OSDictionary * properties, IOUserClient ** handler)
++{
++	static unsigned said;
++
++	if (said++ < 8) {
++		IOLog("RedwoodWLAN: a user client of type %u is asked for: there is none\n", (unsigned) type);
++	}
++	return kIOReturnUnsupported;
++}
++
++/* attach, start, register: the service, or NULL */
++static IOService *
++publish(IOService * service, IOService * provider, const char * name)
++{
++	if (service == NULL || !service->attach(provider)) {
++		OSSafeReleaseNULL(service);
++		return NULL;
++	}
++	service->setName(name);
++	if (!service->start(provider)) {
++		service->detach(provider);
++		service->release();
++		return NULL;
++	}
++	service->registerService();
++	return service;
++}
++
++/* Once, when the interface of a radio exists. */
++void
++RedwoodWLANStart(const char * interface, const uint8_t * address)
++{
++	IOService * platform = IOService::getPlatform();
++	IO80211Controller * controller = OSTypeAlloc(IO80211Controller);
++	RedwoodWLAN * wlan = OSTypeAlloc(RedwoodWLAN);
++	OSData * mac;
++	OSNumber * number;
++
++	if (platform == NULL || controller == NULL || wlan == NULL || !controller->init() || !wlan->init()) {
++		OSSafeReleaseNULL(controller);
++		OSSafeReleaseNULL(wlan);
++		IOLog("RedwoodWLAN: cannot create the services\n");
++		return;
++	}
++	if ((mac = OSData::withBytes(address, 6)) != NULL) {
++		controller->setProperty("IOMACAddress", mac);
++		mac->release();
++	}
++	controller->setProperty("IOBuiltin", true);
++	if ((controller = (IO80211Controller *) publish(controller, platform, "RedwoodWLANController")) == NULL) {
++		wlan->release();
++		IOLog("RedwoodWLAN: the controller did not start\n");
++		return;
++	}
++
++	wlan->setProperty("IOInterfaceName", interface);
++	wlan->setProperty("BSD Name", interface);
++	wlan->setProperty("IOInterfaceNamePrefix", "en");
++	if ((number = OSNumber::withNumber(6ULL, 32)) != NULL) {        /* IFT_ETHER */
++		wlan->setProperty("IOInterfaceType", number);
++		number->release();
++	}
++	if ((number = OSNumber::withNumber((unsigned long long) (interface[2] - '0'), 32)) != NULL) {
++		wlan->setProperty("IOInterfaceUnit", number);
++		number->release();
++	}
++	wlan->setProperty("IOBuiltin", true);
++	wlan->setProperty("IOPrimaryInterface", true);
++	wlan->setProperty("IO80211InterfaceRole", "Infrastructure");
++	if (publish(wlan, controller, "RedwoodWLAN") == NULL) {
++		IOLog("RedwoodWLAN: the service did not start\n");
++	} else {
++		wlan->release();
++	}
++	controller->release();
++}
+diff --git a/iokit/conf/files b/iokit/conf/files
+index c07be8d..12aebf5 100644
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -82,9 +82,9 @@ iokit/Kernel/IOPlatformExpert.cpp			optional iokitcpp
+ iokit/Kernel/GenericARMPE.cpp			optional iokitcpp
+ iokit/Kernel/MiniIOSurface.cpp			optional iokitcpp
+ iokit/Kernel/MiniIOMobileFramebuffer.cpp		optional iokitcpp
+-iokit/Kernel/hakios.gpu.cpp				optional iokitcpp
+-iokit/Kernel/hakios.wlan.cpp			optional iokitcpp
+-iokit/Kernel/hakios.battery.cpp			optional iokitcpp
++iokit/Kernel/RedwoodGPU.cpp				optional iokitcpp
++#iokit/Kernel/hakios.wlan.cpp			optional iokitcpp
++#iokit/Kernel/hakios.battery.cpp			optional iokitcpp
+ iokit/Kernel/MiniAppleKeyStore.cpp			optional iokitcpp
+ iokit/Kernel/MiniIONetworkStack.cpp			optional iokitcpp
+ iokit/Kernel/IOPlatformIO.cpp				optional iokitcpp

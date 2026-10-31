@@ -1,5 +1,7 @@
 # devices/dodge/drivers/wifi/conf: the Wi-Fi drivers of this phone (docs/drivers-config.md).
 # CONFIG_HAKIOS_<NAME>=y in configs/dodge_defconfig builds one in; tools/hakios-config.py reads this file.
+# The `file` lines are also what the legacy build follows: the file next to this conf is copied
+# to that path in the XNU tree (the .github workflow does it; the names are the tree's own).
 
 driver WCN
 	file    bsd/dev/hakios.wcn.c

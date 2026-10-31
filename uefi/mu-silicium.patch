@@ -1,0 +1,689 @@
+diff --git a/BootShim/BootShim.S b/BootShim/BootShim.S
+index 4d208553..3c3b17bb 100644
+--- a/BootShim/BootShim.S
++++ b/BootShim/BootShim.S
+@@ -28,6 +28,27 @@ _CopyLoop:
+   stp   x2, x3, [x5], #16
+   subs  x6, x6, #16
+   b.ne  _CopyLoop
++
++#ifdef PAYLOAD_BASE
++  /* x4 now points just past the FD: an optional "XNUP" payload may follow */
++  ldr   w2, [x4]
++  movz  w3, #0x4E58
++  movk  w3, #0x5055, lsl #16
++  cmp   w2, w3
++  b.ne  _NoPayload
++  ldr   w6, [x4, #4]    /* Payload Size */
++  add   x6, x6, #23     /* Header + Round Up to 16 */
++  and   x6, x6, #~15
++  movz  x5, #(PAYLOAD_BASE >> 16), lsl #16
++
++_PayloadLoop:
++  ldp   x2, x3, [x4], #16
++  stp   x2, x3, [x5], #16
++  subs  x6, x6, #16
++  b.ne  _PayloadLoop
++
++_NoPayload:
++#endif
+   ldr   x5, =FD_BASE
+ 
+ _Entry:
+diff --git a/Mu_Basecore b/Mu_Basecore
+--- a/Mu_Basecore
++++ b/Mu_Basecore
+@@ -1 +1 @@
+-Subproject commit 3c9c7b2e211e62d2a954ad760a36fe05adc43aa3
++Subproject commit 3c9c7b2e211e62d2a954ad760a36fe05adc43aa3-dirty
+diff --git a/Platforms/OnePlus/dodgePkg/Library/MemoryMapLib/MemoryMapLib.c b/Platforms/OnePlus/dodgePkg/Library/MemoryMapLib/MemoryMapLib.c
+index b936c886..856064a8 100644
+--- a/Platforms/OnePlus/dodgePkg/Library/MemoryMapLib/MemoryMapLib.c
++++ b/Platforms/OnePlus/dodgePkg/Library/MemoryMapLib/MemoryMapLib.c
+@@ -30,6 +30,7 @@ gMemoryDescriptor[] = {
+   {"XBL_Ramdump",        0xB8000000, 0x001C0000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
+   {"DBI_Dump",           0xB81C0000, 0x00F00000, NoHob,  MMAP_IO, INITIALIZED, Conv,   UNCACHED_UNBUFFERED_XN},
+   {"DXE_Heap",           0xB90C0000, 0x1D500000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN},
++  {"XNU_Payload",        0xF0000000, 0x04000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+   {"Display_Reserved",   0xFC800000, 0x02B00000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH_XN},
+ 
+   // Other Memory Regions
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+index 9b18ddb1..adf64047 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManager.c
+@@ -1,241 +1,283 @@
+-/**
+-  Copyright (C) DuoWoA authors. All rights reserved.
+-  Copyright (C) Microsoft Corporation. All rights reserved.
+-
+-  SPDX-License-Identifier: BSD-2-Clause-Patent
+-**/
+-
+-#include <Library/PcdLib.h>
+-#include <Library/DebugLib.h>
+-#include <Library/AcpiTableUpdateLib.h>
+-#include <Library/DeviceBootManagerLib.h>
+-#include <Library/PlatformBootManagerLib.h>
+-#include <Library/UefiRuntimeServicesTableLib.h>
+-#include <Library/UefiBootServicesTableLib.h>
+-#include <Library/SecureBootHandlerLib.h>
+-#include <Library/MemoryAllocationLib.h>
+-#include <Library/MsBootOptionsLib.h>
+-#include <Library/BootGraphicsLib.h>
+-#include <Library/BootGraphics.h>
+-#include <Library/PrintLib.h>
+-
+-#include <Configuration/BootDevices.h>
+-
+-#include "BootManager.h"
+-
+-//
+-// Global Variables
+-//
+-STATIC UINTN XPos = 0;
+-STATIC UINTN YPos = 0;
+-
+-//
+-// BDS Combo Message
+-//
+-STATIC CONST CHAR8 *ComboMessage = "[Volume Up] Boot Manager";
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerBeforeConsole ()
+-{
+-  // Signal End Of DXE
+-  EfiEventGroupSignal (&gEfiEndOfDxeEventGroupGuid);
+-
+-  // Dispatch Deferred Images
+-  EfiBootManagerDispatchDeferredImages ();
+-
+-  // Register Boot Options
+-  MsBootOptionsLibRegisterDefaultBootOptions ();
+-
+-  // Register Console Variables
+-  EfiBootManagerUpdateConsoleVariable (ConIn,  (EFI_DEVICE_PATH_PROTOCOL *)&KeypadDevicePath,  NULL);
+-  EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&DisplayDevicePath, NULL);
+-  EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&DisplayDevicePath, NULL);
+-
+-  // Execute Secondary Before Console
+-  DeviceBootManagerBeforeConsole (NULL, NULL);
+-}
+-
+-VOID
+-PostGopSetup (OUT EFI_GRAPHICS_OUTPUT_PROTOCOL **GopProtocol)
+-{
+-  EFI_STATUS                    Status;
+-  EFI_GRAPHICS_OUTPUT_PROTOCOL *LocalGopProtocol;
+-
+-  // Verify Parameters
+-  if (GopProtocol == NULL) {
+-    return;
+-  }
+-
+-  // Locate GOP Protocol
+-  Status = gBS->HandleProtocol (gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, (VOID *)&LocalGopProtocol);
+-  if (EFI_ERROR (Status) && Status != EFI_UNSUPPORTED) {
+-    DEBUG ((EFI_D_ERROR, "%a: Failed to Locate GOP Protocol from Handle! Status = %r\n", __FUNCTION__, Status));
+-    return;
+-  }
+-
+-  // Check Status
+-  if (Status == EFI_UNSUPPORTED) {
+-    // Locate GOP Protocol
+-    Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID *)&LocalGopProtocol);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "%a: Failed to Locate GOP Protocol! Status = %r\n", __FUNCTION__, Status));
+-      return;
+-    }
+-
+-    // Install GOP Protocol
+-    Status = gBS->InstallProtocolInterface (&gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, EFI_NATIVE_INTERFACE, LocalGopProtocol);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "%a: Failed to Install GOP Protocol onto \"ConsoleOutHandle\"! Status = %r\n", __FUNCTION__, Status));
+-    }
+-  }
+-
+-  // Pass GOP Protocol
+-  *GopProtocol = LocalGopProtocol;
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerAfterConsole ()
+-{
+-  EFI_STATUS                    Status      = EFI_SUCCESS;
+-  EFI_GRAPHICS_OUTPUT_PROTOCOL *GopProtocol = NULL;
+-
+-  // Post Setup GOP
+-  PostGopSetup (&GopProtocol);
+-
+-  // Display Boot Logo
+-  Status = DisplayBootGraphic (BG_SYSTEM_LOGO);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "%a: Failed to Display Boot Logo! Status = %r\n", __FUNCTION__, Status));
+-  }
+-
+-  // Register Key Callback
+-  Status = RegisterKeyCallback ((EFI_DEVICE_PATH_PROTOCOL *)&KeypadDevicePath);
+-  if (!EFI_ERROR (Status) && GopProtocol != NULL) {
+-    // Set Screen Resolution
+-    UINT32 ScreenWidth  = GopProtocol->Mode->Info->HorizontalResolution;
+-    UINT32 ScreenHeight = GopProtocol->Mode->Info->VerticalResolution;
+-
+-    // Set Combo Message Position
+-    XPos = (ScreenWidth - AsciiStrLen (ComboMessage) * EFI_GLYPH_WIDTH) / 2;
+-    YPos = ScreenHeight * 48 / 50;
+-  }
+-
+-  // Execute Secondary After Console
+-  DeviceBootManagerAfterConsole ();
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerOnDemandConInConnect ()
+-{
+-  // Execute Secondary On Demand
+-  DeviceBootManagerOnDemandConInConnect ();
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerProcessBootCompletion (OUT EFI_BOOT_MANAGER_LOAD_OPTION *BootOption)
+-{
+-  return;
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerPriorityBoot (IN OUT UINT16 **BootNext)
+-{
+-  EFI_STATUS                   Status;
+-  EFI_BOOT_MANAGER_LOAD_OPTION LoadOption;
+-  BOOLEAN                      BootManagerFlag;
+-
+-  // Unregister Key Callback
+-  UnregisterKeyCallback ();
+-
+-  // Get Boot Manager Flag
+-  BootManagerFlag = EnterBootManager ();
+-  if (BootManagerFlag == FALSE) {
+-    return;
+-  }
+-
+-  // Get Boot Manager Load Option
+-  Status = MsBootOptionsLibGetBootManagerMenu (&LoadOption, NULL);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "%a: Failed to get Boot Manager Load Option! Status = %r", __FUNCTION__, Status));
+-    return;
+-  }
+-
+-  // Execute Boot Manager Load Option
+-  EfiBootManagerBoot           (&LoadOption);
+-  EfiBootManagerFreeLoadOption (&LoadOption);
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerWaitCallback (IN UINT16 TimeoutRemain)
+-{
+-  EFI_GRAPHICS_OUTPUT_BLT_PIXEL Color;
+-
+-  // Verify Combo Message Position
+-  if (XPos == 0 && YPos == 0) {
+-    return;
+-  }
+-
+-  // Get Timeout Time
+-  UINT16 Timeout = PcdGet16 (PcdPlatformBootTimeOut);
+-
+-  // Check Remaining Timeout
+-  if (TimeoutRemain == Timeout || TimeoutRemain == 0) {
+-    // Set Draw Color
+-    UINT8 DrawColor = (TimeoutRemain == Timeout) ? 0xFF : 0x00;
+-
+-    // Set GOP Draw Color
+-    Color.Red = Color.Green = Color.Blue = DrawColor;
+-
+-    // Print Combo Message
+-    AsciiPrintXY (XPos, YPos, &Color, NULL, ComboMessage);
+-  }
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerUnableToBoot ()
+-{
+-  EFI_STATUS Status;
+-
+-  // Execute Secondary Unable To Boot
+-  DeviceBootManagerUnableToBoot ();
+-
+-  // Display No Boot OS Logo
+-  Status = DisplayBootGraphic (BG_NO_BOOT_OS);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "%a: Failed to Display No Boot OS Logo! Status = %r\n", __FUNCTION__, Status));
+-    Print (L"No Operating System Found! Please make sure that an OS is Installed.\n");
+-  }
+-
+-  // Wait 10s
+-  gBS->Stall (10000000);
+-
+-  // Shutdown
+-  gRT->ResetSystem (EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+-
+-  // Do Cpu Dead Loop
+-  CpuDeadLoop ();
+-}
+-
+-VOID
+-EFIAPI
+-PlatformBootManagerBdsEntry ()
+-{
+-  EFI_STATUS Status;
+-
+-  // Setup Secure Boot
+-  Status = SetupSecureBoot ();
+-  ASSERT_EFI_ERROR (Status);
+-
+-  // Update ACPI Tables
+-  UpdateAcpiTables ();
+-
+-  // Execute Secondary BDS Entry
+-  DeviceBootManagerBdsEntry ();
+-}
++/**
++  Copyright (C) DuoWoA authors. All rights reserved.
++  Copyright (C) Microsoft Corporation. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Library/PcdLib.h>
++#include <Library/DebugLib.h>
++#include <Library/AcpiTableUpdateLib.h>
++#include <Library/DeviceBootManagerLib.h>
++#include <Library/PlatformBootManagerLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/SecureBootHandlerLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/MsBootOptionsLib.h>
++#include <Library/BootGraphicsLib.h>
++#include <Library/BootGraphics.h>
++#include <Library/PrintLib.h>
++
++#include <Configuration/BootDevices.h>
++
++#include "BootManager.h"
++#include "XnuLoader.h"
++
++//
++// Global Variables
++//
++STATIC UINTN XPos = 0;
++STATIC UINTN YPos = 0;
++
++//
++// BDS Combo Message
++//
++STATIC CONST CHAR8 *ComboMessage = "[Volume Up] Boot Manager";
++
++VOID
++EFIAPI
++PlatformBootManagerBeforeConsole ()
++{
++  /*
++   * The phone's XBL leaves the hypervisor virtual watchdog running; nothing in BDS pets it
++   * and the firmware would be reset mid-boot (the bootloader scans this phone's storage take
++   * longer than its bite). Calm it before any boot work; the XNU loader re-arms it once up.
++   */
++  XnuLogInit ();
++  WdtNeutralize ();
++  XnuLog ("bds: BeforeConsole\n");
++  XnuLogFlush ();
++
++  // Signal End Of DXE
++  EfiEventGroupSignal (&gEfiEndOfDxeEventGroupGuid);
++
++  // Dispatch Deferred Images
++  EfiBootManagerDispatchDeferredImages ();
++
++  /*
++   * (hackios) No storage boot options: the XNU payload is all this firmware starts, and the
++   * bootloader scans for \EFI\BOOT on UFS and USB are dead time (and what the watchdog used
++   * to interrupt). "Nothing to boot" goes straight to the XNU loader.
++   */
++  // MsBootOptionsLibRegisterDefaultBootOptions ();
++
++  // Register Console Variables
++  EfiBootManagerUpdateConsoleVariable (ConIn,  (EFI_DEVICE_PATH_PROTOCOL *)&KeypadDevicePath,  NULL);
++  EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&DisplayDevicePath, NULL);
++  EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&DisplayDevicePath, NULL);
++
++  // Execute Secondary Before Console
++  DeviceBootManagerBeforeConsole (NULL, NULL);
++}
++
++VOID
++PostGopSetup (OUT EFI_GRAPHICS_OUTPUT_PROTOCOL **GopProtocol)
++{
++  EFI_STATUS                    Status;
++  EFI_GRAPHICS_OUTPUT_PROTOCOL *LocalGopProtocol;
++
++  // Verify Parameters
++  if (GopProtocol == NULL) {
++    return;
++  }
++
++  // Locate GOP Protocol
++  Status = gBS->HandleProtocol (gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, (VOID *)&LocalGopProtocol);
++  if (EFI_ERROR (Status) && Status != EFI_UNSUPPORTED) {
++    DEBUG ((EFI_D_ERROR, "%a: Failed to Locate GOP Protocol from Handle! Status = %r\n", __FUNCTION__, Status));
++    return;
++  }
++
++  // Check Status
++  if (Status == EFI_UNSUPPORTED) {
++    // Locate GOP Protocol
++    Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID *)&LocalGopProtocol);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "%a: Failed to Locate GOP Protocol! Status = %r\n", __FUNCTION__, Status));
++      return;
++    }
++
++    // Install GOP Protocol
++    Status = gBS->InstallProtocolInterface (&gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, EFI_NATIVE_INTERFACE, LocalGopProtocol);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "%a: Failed to Install GOP Protocol onto \"ConsoleOutHandle\"! Status = %r\n", __FUNCTION__, Status));
++    }
++  }
++
++  // Pass GOP Protocol
++  *GopProtocol = LocalGopProtocol;
++}
++
++VOID
++EFIAPI
++PlatformBootManagerAfterConsole ()
++{
++  EFI_STATUS                    Status      = EFI_SUCCESS;
++  EFI_GRAPHICS_OUTPUT_PROTOCOL *GopProtocol = NULL;
++
++  XnuLog ("bds: AfterConsole\n");
++  XnuLogFlush ();
++
++  // Post Setup GOP
++  PostGopSetup (&GopProtocol);
++
++  // Display Boot Logo
++  Status = DisplayBootGraphic (BG_SYSTEM_LOGO);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "%a: Failed to Display Boot Logo! Status = %r\n", __FUNCTION__, Status));
++  }
++
++  /*
++   * (hackios) The XNU payload is this firmware's only boot target: start it right after the
++   * logo. The key-callback registration and the SD-card/USB events further below are where
++   * this SoC's stock drivers take the firmware down, and BDS after them would spend what the
++   * watchdog allows on boot options of the stock firmware. Does not return.
++   */
++  XnuLog ("bds: starting XNU payload\n");
++  XnuLogFlush ();
++  XnuLoaderMain ();
++
++  // Register Key Callback
++  Status = RegisterKeyCallback ((EFI_DEVICE_PATH_PROTOCOL *)&KeypadDevicePath);
++  if (!EFI_ERROR (Status) && GopProtocol != NULL) {
++    // Set Screen Resolution
++    UINT32 ScreenWidth  = GopProtocol->Mode->Info->HorizontalResolution;
++    UINT32 ScreenHeight = GopProtocol->Mode->Info->VerticalResolution;
++
++    // Set Combo Message Position
++    XPos = (ScreenWidth - AsciiStrLen (ComboMessage) * EFI_GLYPH_WIDTH) / 2;
++    YPos = ScreenHeight * 48 / 50;
++  }
++
++  // Execute Secondary After Console
++  DeviceBootManagerAfterConsole ();
++
++  /*
++   * (hackios) The XNU payload is this firmware's only boot target: start it as soon as the
++   * logo is up, before BDS would spend its time (and the watchdog budget) on boot-option
++   * variables the stock firmware left behind and the storage scans they cause. Does not
++   * return; "unable to boot" below stays as the unreachable fallback.
++   */
++  XnuLoaderMain ();
++}
++
++VOID
++EFIAPI
++PlatformBootManagerOnDemandConInConnect ()
++{
++  // Execute Secondary On Demand
++  DeviceBootManagerOnDemandConInConnect ();
++}
++
++VOID
++EFIAPI
++PlatformBootManagerProcessBootCompletion (OUT EFI_BOOT_MANAGER_LOAD_OPTION *BootOption)
++{
++  return;
++}
++
++VOID
++EFIAPI
++PlatformBootManagerPriorityBoot (IN OUT UINT16 **BootNext)
++{
++  EFI_STATUS                   Status;
++  EFI_BOOT_MANAGER_LOAD_OPTION LoadOption;
++  BOOLEAN                      BootManagerFlag;
++
++  // Unregister Key Callback
++  UnregisterKeyCallback ();
++
++  // Get Boot Manager Flag
++  BootManagerFlag = EnterBootManager ();
++  if (BootManagerFlag == FALSE) {
++    return;
++  }
++
++  // Get Boot Manager Load Option
++  Status = MsBootOptionsLibGetBootManagerMenu (&LoadOption, NULL);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "%a: Failed to get Boot Manager Load Option! Status = %r", __FUNCTION__, Status));
++    return;
++  }
++
++  // Execute Boot Manager Load Option
++  EfiBootManagerBoot           (&LoadOption);
++  EfiBootManagerFreeLoadOption (&LoadOption);
++}
++
++VOID
++EFIAPI
++PlatformBootManagerWaitCallback (IN UINT16 TimeoutRemain)
++{
++  EFI_GRAPHICS_OUTPUT_BLT_PIXEL Color;
++
++  // Verify Combo Message Position
++  if (XPos == 0 && YPos == 0) {
++    return;
++  }
++
++  // Get Timeout Time
++  UINT16 Timeout = PcdGet16 (PcdPlatformBootTimeOut);
++
++  // Check Remaining Timeout
++  if (TimeoutRemain == Timeout || TimeoutRemain == 0) {
++    // Set Draw Color
++    UINT8 DrawColor = (TimeoutRemain == Timeout) ? 0xFF : 0x00;
++
++    // Set GOP Draw Color
++    Color.Red = Color.Green = Color.Blue = DrawColor;
++
++    // Print Combo Message
++    AsciiPrintXY (XPos, YPos, &Color, NULL, ComboMessage);
++  }
++}
++
++VOID
++EFIAPI
++PlatformBootManagerUnableToBoot ()
++{
++  EFI_STATUS Status;
++
++  XnuLog ("bds: UnableToBoot\n");
++  XnuLogFlush ();
++
++  // Nothing else to boot: hand over to the XNU loader (does not return)
++  XnuLoaderMain ();
++
++  // Execute Secondary Unable To Boot
++  DeviceBootManagerUnableToBoot ();
++
++  // Display No Boot OS Logo
++  Status = DisplayBootGraphic (BG_NO_BOOT_OS);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "%a: Failed to Display No Boot OS Logo! Status = %r\n", __FUNCTION__, Status));
++    Print (L"No Operating System Found! Please make sure that an OS is Installed.\n");
++  }
++
++  // Wait 10s
++  gBS->Stall (10000000);
++
++  // Shutdown
++  gRT->ResetSystem (EfiResetShutdown, EFI_SUCCESS, 0, NULL);
++
++  // Do Cpu Dead Loop
++  CpuDeadLoop ();
++}
++
++VOID
++EFIAPI
++PlatformBootManagerBdsEntry ()
++{
++  EFI_STATUS Status;
++
++  // Setup Secure Boot
++  Status = SetupSecureBoot ();
++  ASSERT_EFI_ERROR (Status);
++
++  // Update ACPI Tables
++  UpdateAcpiTables ();
++
++  // Execute Secondary BDS Entry
++  DeviceBootManagerBdsEntry ();
++}
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
+index 2310dc61..12a5a5dc 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
++++ b/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf
+@@ -1,50 +1,55 @@
+-##
+-#  Copyright (C) Microsoft Corporation. All rights reserved.
+-#  SPDX-License-Identifier: BSD-2-Clause-Patent
+-##
+-
+-[Defines]
+-  INF_VERSION                    = 0x00010018
+-  BASE_NAME                      = BootManagerLib
+-  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
+-  VERSION_STRING                 = 1.0
+-  MODULE_TYPE                    = DXE_DRIVER
+-  UEFI_SPECIFICATION_VERSION     = 2.7
+-  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
+-
+-[Sources]
+-  BootManager.c
+-  KeyCallback.c
+-
+-[Packages]
+-  MdePkg/MdePkg.dec
+-  PcBdsPkg/PcBdsPkg.dec
+-  MsCorePkg/MsCorePkg.dec
+-  MsGraphicsPkg/MsGraphicsPkg.dec
+-  MdeModulePkg/MdeModulePkg.dec
+-  SiliciumPkg/SiliciumPkg.dec
+-
+-[LibraryClasses]
+-  PcdLib
+-  DebugLib
+-  AcpiTableUpdateLib
+-  DeviceBootManagerLib
+-  UefiRuntimeServicesTableLib
+-  UefiBootServicesTableLib
+-  SecureBootHandlerLib
+-  MemoryAllocationLib
+-  MsBootOptionsLib
+-  BootGraphicsLib
+-  DevicePathLib
+-  PrintLib
+-
+-[Pcd]
+-  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
+-
+-[Guids]
+-  gEfiEndOfDxeEventGroupGuid
+-
+-[Protocols]
+-  gKeypadDeviceProtocolGuid
+-  gEfiGraphicsOutputProtocolGuid
+-  gEfiSimpleTextInputExProtocolGuid
++##
++#  Copyright (C) Microsoft Corporation. All rights reserved.
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010018
++  BASE_NAME                      = BootManagerLib
++  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
++  VERSION_STRING                 = 1.0
++  MODULE_TYPE                    = DXE_DRIVER
++  UEFI_SPECIFICATION_VERSION     = 2.7
++  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
++
++[Sources]
++  BootManager.c
++  XnuLoader.c
++  KeyCallback.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  PcBdsPkg/PcBdsPkg.dec
++  MsCorePkg/MsCorePkg.dec
++  MsGraphicsPkg/MsGraphicsPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  SiliciumPkg/SiliciumPkg.dec
++
++[LibraryClasses]
++  PcdLib
++  DebugLib
++  AcpiTableUpdateLib
++  DeviceBootManagerLib
++  UefiRuntimeServicesTableLib
++  UefiBootServicesTableLib
++  SecureBootHandlerLib
++  MemoryAllocationLib
++  MsBootOptionsLib
++  BootGraphicsLib
++  DevicePathLib
++  PrintLib
++  BaseLib
++  BaseMemoryLib
++
++[Pcd]
++  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
++
++[Guids]
++  gEfiEndOfDxeEventGroupGuid
++
++[Protocols]
++  gKeypadDeviceProtocolGuid
++  gEfiGraphicsOutputProtocolGuid
++  gEfiSimpleTextInputExProtocolGuid
++  gEfiBlockIoProtocolGuid
++  gEfiPartitionInfoProtocolGuid

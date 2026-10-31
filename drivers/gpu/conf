@@ -1,47 +1,50 @@
 # devices/dodge/drivers/gpu/conf: the Adreno 830 of the SM8750, from an SM8750 reference implementation.
 # CONFIG_HAKIOS_<NAME>=y in configs/dodge_defconfig builds one in; tools/hakios-config.py reads this file.
+# The `file` lines are also what the legacy build follows: the file next to this conf is copied
+# to that path in the XNU tree (the .github workflow does it; the names are the tree's own --
+# the kernel tree's unprefixed ones, not the config system's renames).
 
 driver ADRENO8
-	file    bsd/dev/hakios.adreno8.c
-	file    bsd/dev/hakios.adreno8_bo.c
-	file    bsd/dev/hakios.adreno8_clock.c
-	file    bsd/dev/hakios.adreno8_context.c
-	file    bsd/dev/hakios.adreno8_cx.c
-	file    bsd/dev/hakios.adreno8_gmu.c
-	file    bsd/dev/hakios.adreno8_gpu.c
-	file    bsd/dev/hakios.adreno8_hfi.c
-	file    bsd/dev/hakios.adreno8_hwsched.c
-	file    bsd/dev/hakios.adreno8_memory.c
-	file    bsd/dev/hakios.adreno8_rpmh.c
-	file    bsd/dev/hakios.adreno8_secure.c
-	file    bsd/dev/hakios.adreno8_smmu.c
-	file    bsd/dev/hakios.adreno8_translation.c
-	file    bsd/dev/hakios.adreno8_zap.c
-	file    bsd/dev/hakios.adreno8_private.h
-	file    bsd/dev/hakios.adreno8_bo_private.h
-	file    bsd/dev/hakios.adreno8_clock_private.h
-	file    bsd/dev/hakios.adreno8_context_private.h
-	file    bsd/dev/hakios.adreno8_gpu_private.h
-	file    bsd/dev/hakios.adreno8_hwsched_private.h
-	file    bsd/dev/hakios.adreno8_memory_private.h
-	file    bsd/dev/hakios.adreno8_rpmh_private.h
-	file    bsd/dev/hakios.adreno8_secure_private.h
-	file    bsd/dev/hakios.adreno8_smmu_private.h
-	file    bsd/dev/hakios.adreno8_wire_private.h
-	file    bsd/dev/hakios.adreno8_zap_private.h
+	file    bsd/dev/adreno8.c
+	file    bsd/dev/adreno8_bo.c
+	file    bsd/dev/adreno8_clock.c
+	file    bsd/dev/adreno8_context.c
+	file    bsd/dev/adreno8_cx.c
+	file    bsd/dev/adreno8_gmu.c
+	file    bsd/dev/adreno8_gpu.c
+	file    bsd/dev/adreno8_hfi.c
+	file    bsd/dev/adreno8_hwsched.c
+	file    bsd/dev/adreno8_memory.c
+	file    bsd/dev/adreno8_rpmh.c
+	file    bsd/dev/adreno8_secure.c
+	file    bsd/dev/adreno8_smmu.c
+	file    bsd/dev/adreno8_translation.c
+	file    bsd/dev/adreno8_zap.c
+	file    bsd/dev/adreno8_private.h
+	file    bsd/dev/adreno8_bo_private.h
+	file    bsd/dev/adreno8_clock_private.h
+	file    bsd/dev/adreno8_context_private.h
+	file    bsd/dev/adreno8_gpu_private.h
+	file    bsd/dev/adreno8_hwsched_private.h
+	file    bsd/dev/adreno8_memory_private.h
+	file    bsd/dev/adreno8_rpmh_private.h
+	file    bsd/dev/adreno8_secure_private.h
+	file    bsd/dev/adreno8_smmu_private.h
+	file    bsd/dev/adreno8_wire_private.h
+	file    bsd/dev/adreno8_zap_private.h
 	help    the A830 woken step by step -- 23 stages from the speed bin to a context test
-	help    (adreno8=N; 17 with keep=1 return=0 gmuclk=2 secure_preflight=4 needs touchscreen=0
-	help    wfi=0 wfe_mode=0 and an Android cold settle first). GPU execution proven: the CP
-	help    writes scratch, zap authenticates through PAS 13, MP_ASSIGN hands the secure memory over
+	help    (adreno8=N; 23 with keep=1 return=0 gmuclk=2 secure_preflight=4 needs touchscreen=0
+	help    wfi=0 wfe_mode=0 and an Android cold settle first). GPU execution proven on this phone:
+	help    the CP writes scratch, zap authenticates through PAS 13, MP_ASSIGN hands the secure memory
+	help    over, and the RedwoodGPU service registers with standard HWSCHED submission
 
 driver GPU_SERVICE
-	file    bsd/dev/hakios.redwood_adreno.c
-	file    bsd/dev/hakios.gpu_dispatch.c
-	file    iokit/Kernel/hakios.RedwoodGPU.cpp iokitcpp
-	file    bsd/dev/hakios.gpu_private.h
-	file    bsd/dev/hakios.gpu_service.inc
-	file    iokit/Kernel/hakios.RedwoodGPUMemory.inc
-	file    iokit/Kernel/hakios.RedwoodGPUSubmit.inc
+	file    bsd/dev/redwood_adreno.c
+	file    bsd/dev/redwood_gpu_dispatch.c
+	file    bsd/dev/redwood_gpu_private.h
+	file    bsd/dev/redwood_gpu_service.inc
+	file    iokit/Kernel/RedwoodGPU.cpp iokitcpp
+	file    iokit/Kernel/RedwoodGPUMemory.inc
+	file    iokit/Kernel/RedwoodGPUSubmit.inc
 	help    the RedwoodGPU service Mesa's freedreno draws through: BOs and standard HWSCHED
-	help    submission (a reference implementation; the registration is synchronous inside adreno8's
-	help    stage 23 -- the earlier freeze was a warm-session ghost, not the registration)
+	help    submission; the registration runs inside adreno8's stage 23

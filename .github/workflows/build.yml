@@ -7,9 +7,11 @@ on:
   workflow_dispatch:
 
 env:
-  HACKIOS_REPO: https://github.com/oosexgang/hackios-xnu-kernel
-  # the hackios (device-model) tree this port is built against
-  HACKIOS_REF: 7867dc1
+  # the hackios (device-model) tree this port is built against: the upstream's legacy branch,
+  # plus this repository's patches (patches/kernel-common.patch on the tree,
+  # patches/xnu-dodge.patch on the XNU sources, on top of the upstream's own patch)
+  HACKIOS_REPO: https://github.com/oosexgang/hackios-xnu-kernel.git
+  HACKIOS_REF: legacy-hackios
 
 jobs:
   build:
@@ -18,13 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: apt packages
+      - name: packages
         run: |
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl xz-utils make flex bison m4 perl \
             python3 python3-pip python3-venv autoconf automake libtool \
-            pkg-config clang lld llvm nasm zip uuid-dev libncurses-dev
+            pkg-config clang lld llvm nasm zip uuid-dev libncurses-dev ninja-build meson
 
       - name: theos (the cctools ld64 and the iPhoneOS 16.5 SDK)
         run: |
@@ -37,34 +39,153 @@ jobs:
           git -C /tmp/sdks sparse-checkout set iPhoneOS16.5.sdk
           mkdir -p "$HOME/theos/sdks" && mv /tmp/sdks/iPhoneOS16.5.sdk "$HOME/theos/sdks/"
 
-      - name: hackios (upstream clone) + this device
+      # ---- the sources: the upstream tree, this port's layers on it, the kernel's own deps ----
+
+      - name: sources (upstream + this port + xnu-deps)
         run: |
           git clone -q "$HACKIOS_REPO" hackios
           git -C hackios checkout -q "$HACKIOS_REF"
-          git -C hackios apply --whitespace=nowarn ../patches/kernel-common.patch
+          # this repository becomes the tree's device directory
           rm -rf hackios/devices/dodge && mkdir -p hackios/devices/dodge
           find . -mindepth 1 -maxdepth 1 -not -name hackios -exec cp -r {} hackios/devices/dodge/ \;
           rm -rf hackios/devices/dodge/.git
+          cd hackios
+          git apply --whitespace=nowarn devices/dodge/patches/kernel-common.patch
+          xnu/apply.sh     # the upstream's own XNU patch and files/, as they are
+          # this port's kernel work on top: core changes and the driver registrations
+          # (the A830 GPU bring-up conditions, the evolved mini-iokit, the adsp SCM revert)
+          git -C xnu-src/xnu-8796.121.2 apply --whitespace=nowarn "$PWD/devices/dodge/patches/xnu-dodge.patch"
+          # the drivers, straight from drivers/: every `file <path>` line of a drivers/*/conf
+          # copies the file beside that conf to that path in the XNU tree
+          ( cd devices/dodge
+            XNU="$PWD/../../xnu-src/xnu-8796.121.2"
+            for conf in drivers/*/conf; do
+              d=$(dirname "$conf")
+              for dest in $(sed -n 's/^[[:space:]]*file[[:space:]]\+\([^[:space:]]\+\).*/\1/p' "$conf"); do
+                mkdir -p "$XNU/$(dirname "$dest")"
+                cp "$d/$(basename "$dest")" "$XNU/$dest" \
+                  || { echo "cannot install driver $dest from $d"; exit 1; }
+              done
+            done )
+          # the kernel build's own dependencies the tree does not carry (the SDK, the host
+          # tools, the stage-2 libraries); the Makefile would skip setup -- the committed
+          # xnu-clang wrapper satisfies its guard. Idempotent; uses the theos above.
+          xnu-deps/setup.sh
 
-      - name: kernel (Apple XNU + the A830 GPU + this phone's drivers)
+      - name: kernel
         run: |
           cd hackios
           export LC_ALL=C
-          python3 tools/boot-args.py --lst > configs/boot-args.lst
-          python3 tools/boot-args.py --markdown > docs/boot-args.md
-          python3 tools/boot-args.py --symbols > configs/symbols.tsv
-          make dodge_defconfig
-          make kernel -j"$(nproc)"
-          cp hakios-kernel ../kernel.bin
+          make kernel JOBS=$(nproc) || true    # a trailing target after mach.* may fail
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          [ -s "$K" ] || { echo "--- the kernel was not built"; exit 1; }
+          cp "$K" hakios-kernel
+          cp hakios-kernel kernel.bin
 
-      - name: loader
+      # ---- the loader: with the real identity from the start -- the device tree is a single ----
+      # ---- 34 KB member of the IPSW on Apple's CDN, so this needs neither 7z nor disk space ----
+
+      - name: loader (the real identity, once)
         run: |
           python3 -m pip install --user --break-system-packages lzfse 2>/dev/null || python3 -m pip install --user lzfse
-          cd hackios && make loader-open && cp xnuloader/loader.efi ../loader.efi    # the placeholder identity: no IPSW on the runner
+          cd hackios
+          xnuloader/mkidentity.sh
+          make loader
+
+      # ---- the UEFI firmware: cached, the clone + build is the slowest part after the kernel ----
+
+      - name: restore the UEFI tree (cache)
+        id: uefi-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: hackios/Mu-Silicium
+          key: uefi-dodge-${{ hashFiles('hackios/devices/dodge/uefi/**') }}
+          restore-keys: uefi-dodge-
+      - name: drop a stale UEFI tree (restored from another revision)
+        if: steps.uefi-cache.outputs.cache-hit != 'true'
+        run: rm -rf hackios/Mu-Silicium
+      - name: UEFI (Mu-Silicium + the port)
+        run: |
+          cd hackios && devices/dodge/uefi/apply.sh
+          python3 -m venv venv
+          venv/bin/pip -q install -r Mu-Silicium/pip-requirements.txt
+          D=Mu-Silicium/Mu_Basecore/BaseTools/Bin/mu_nasm_extdep     # mu_nasm without Mono
+          mkdir -p "$D/Linux-x86-64" && echo 'version: 20016.1.1' > "$D/extdep_state.yaml"
+          ln -sf /usr/bin/nasm "$D/Linux-x86-64/nasm"               # -f: a restored tree has them
+          ln -sf /usr/bin/ndisasm "$D/Linux-x86-64/ndisasm"
+          ( cd Mu-Silicium && ../venv/bin/python3 build_uefi.py -d dodge -r RELEASE )
+          ls -la Mu-Silicium/Build/dodgePkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
+      - name: save the UEFI tree (cache)
+        if: steps.uefi-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: hackios/Mu-Silicium
+          key: uefi-dodge-${{ hashFiles('hackios/devices/dodge/uefi/**') }}
+
+      - name: "boot image (once -- real kernel, real loader, real FD)"
+        run: |
+          cd hackios
+          python3 xnuloader/mkpayload.py -o usb-payload.bin loader.efi=xnuloader/loader.efi --usb
+          # a wrong UEFI_FD would silently fall back to the reference phone's prebuilt and not boot here
+          UEFI_FD=Mu-Silicium/Build/dodgePkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd \
+            DTB=Mu-Silicium/Resources/DTBs/dodge.dtb \
+            FD_BASE=0xA7100000 FD_SIZE=0x300000 PAYLOAD_BASE=0xF0000000 BOOT_HEADER=4 \
+            python3 mkxnuimg.py -p usb-payload.bin -o boot.img
+          ls -la boot.img kernel.bin
+
+      # ---- the system image: ~8 GB of Apple's CDN and unpacking, the flakiest part -- so it ----
+      # ---- sits after everything of ours is built, and only the package waits on it ----
+
+      - name: free the disk for the system image
+        run: |
+          df -h / /mnt || true
+          rm -rf hackios/xnu-src/xnu-8796.121.2/BUILD hackios/xnu-src/xnu-8796.121.2/.git
+          rm -rf hackios/Mu-Silicium hackios/venv        # the boot image above consumed the FD
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/.ghcup 2>/dev/null || true
+          df -h / /mnt || true
+
+      - name: system image (from Apple's IPSW, the GL build)
+        run: |
+          curl -fsSL https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz | tar -xJ -C /tmp
+          sudo ln -sf /tmp/7zz /usr/local/bin/7z && 7z | head -3
+          cd hackios
+          export PATH="$PWD/xnu-deps/host/bin:$PATH" LC_ALL=C
+          cp -r devices/dodge/fw-gpu fw-gpu     # this phone's GPU firmware: without it the
+                                                # kernel's GPU bring-up stops at its step 9
+          make fetch > /tmp/fetch.log 2>&1 \
+            || { echo '--- fetch failed, tail:'; tail -40 /tmp/fetch.log; exit 1; }
+          # the images, GL required: without Mesa this zip cannot drive the GPU. The
+          # library names are the tree's own (libhakios.*; the libredwood.* of the
+          # October phone-verified root was the tree before its rename)
+          IMAGE_OPTS="GL=1" make images > /tmp/gl.log 2>&1 \
+            || { echo '--- GL=1 images failed, tail:'; tail -40 /tmp/gl.log; exit 1; }
+          # what a broken image would be missing (a disk-full mid-image once shipped green)
+          strings userland/system.apfs | grep -q launchd.ios \
+            || { echo '--- system.apfs has no launchd.ios: the image is incomplete'; exit 1; }
+          strings userland/root.apfs | grep -q gen80000_gmu \
+            || { echo '--- root.apfs has no GPU firmware: the image is incomplete'; exit 1; }
+          strings userland/root.apfs | grep -q libhakios.dylib \
+            || { echo '--- root.apfs has no injection libraries: the image is incomplete'; exit 1; }
+          strings userland/root.apfs | grep -q libhakios.gl.dylib \
+            || { echo '--- root.apfs has no GL library: the image is incomplete'; exit 1; }
+
+      - name: package (the one zip, everything in it)
+        run: |
+          cd hackios
+          devices/dodge/package.sh
+          unzip -l devices/dodge/dist/hackios-dodge-*.zip | tail -8
+
+      # ---- publish: one artifact, and the same zip on a tag ----
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dodge-hakios
-          path: |
-            kernel.bin
-            loader.efi
+          name: hackios-dodge
+          path: hackios/devices/dodge/dist/hackios-dodge-*.zip
+
+      - name: release (tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" hackios/devices/dodge/dist/hackios-dodge-*.zip \
+            --title "${GITHUB_REF#refs/tags/}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -14,15 +14,25 @@ repository carries what is true of this phone and of its SoC family and of no ot
 
 ## What works (seen on the phone, October 2026)
 
-A run reaches SpringBoard on the loader's (UEFI's) framebuffer, with the touch screen, all three
-buttons, and the audio DSP's PAS bring-up steps; the WCN7850's PCIe link is probed read-only.
-What is not brought up yet: GPU, sound out, Wi-Fi as a network, UFS storage, modem, cameras,
-haptic, thermal. The full story of the touch panel alone (SPMI writes, RPMh votes through the
-RSC, GPIO bit-bang SPI, the TouchCom protocol) is in the head of
-[drivers/input/hakios.dodge_touch.c](drivers/input/hakios.dodge_touch.c).
+A run reaches SpringBoard on the GPU (Adreno 830, the 23-stage bring-up and the RedwoodGPU
+service, Mesa rendering), with the touch screen, all three buttons; the audio DSP's PAS
+bring-up steps and the WCN7850's read-only PCIe probe also run. What is not brought up yet:
+sound out, Wi-Fi as a network, UFS storage, modem, cameras, haptic, thermal. The full story of
+the touch panel alone (SPMI writes, RPMh votes through the RSC, GPIO bit-bang SPI, the
+TouchCom protocol) is in the head of [drivers/input/hakios.dodge_touch.c](drivers/input/hakios.dodge_touch.c).
 
 `configs/dodge.config` is the record: what is built in, and every boot-argument of the working
 runs. Four cores (`cpus=4`) is the proven boot; all eight have been booted (`cpus=8`) too.
+The GPU needs its whole argument set together (`touchscreen=0 wfi=0 wfe_mode=0` are required
+alongside the `adreno8` set by the ARC clock votes of the kernel's adreno8_rpmh.c), a cold
+Android settle before the run, the GPU firmware of `fw-gpu/`, and the GL system and root
+images (Mesa) -- the plain root stops at init's self checks.
+
+**The SCM waitqueue protocol is reverted in this port's patch** (patches/xnu-dodge.patch carries the
+adsp driver without it): the polling GET_WQ_CTX/WAITQ_RESUME loop that the audio DSP's long calls
+want deadlocks the adreno8 secure handover -- every run that passed GPU step 5 hung the whole
+kernel. Until it is implemented bounded, the audio DSP's bring-up arguments stay staged and
+the adsp driver out of the boot.
 
 ## The SoC addresses (`soc.args`)
 
@@ -72,12 +82,11 @@ SOC_ARGS= make phone SECS=600
 ```
 
 `make phone` takes this device's arguments from the .config (`tools/hakios-config.py args`; the
-proven set: `cpus=4 adsp=1 adsp_noipcc=1 adsp_gicmask=1 adsp_bw=1 adsp_smem=0x81d00000
-adsp_smem_size=0x200000 adsp_mem=0x9ee00000 adsp_size=0x5080000 adsp_cmddb=0x81c60000
-adsp_rsc=0x16520000 adsp_ipcc=0x406000 buttons=1 buttons_pin=0x18d buttons_swap=1 synaptics=1
-wifi_pcie=1`) and builds `xnu-usb.img` with the env above. **`SOC_ARGS=` matters**: the modem's
-`soc_*` arguments of `soc.args` are dormant in this configuration (MODEM is left out) and with
-them the kernel's 607-character command line overflows and loses its tail; drop them until the
+proven set: `cpus=4 buttons=1 buttons_pin=0x18d buttons_swap=1 synaptics=1 touchscreen=0
+wfi=0 wfe_mode=0 adreno8=23 adreno8_keep=1 adreno8_return=0 adreno8_gmuclk=2
+adreno8_secure_preflight=4`) and builds `xnu-usb.img` with the env above. **`SOC_ARGS=` matters**:
+the modem's `soc_*` arguments of `soc.args` are dormant in this configuration (MODEM is left
+out) and with them the kernel's command line overflows and loses its tail; drop them until the
 modem is brought up, when they are what `soc.args` is for.
 
 ## The three changes this phone needed outside this repository
