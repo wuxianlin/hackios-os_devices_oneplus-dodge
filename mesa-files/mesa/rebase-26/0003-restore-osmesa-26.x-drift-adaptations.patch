@@ -1,0 +1,3865 @@
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/.gitlab-ci/build/gitlab-ci.yml mesa-26.2.5/.gitlab-ci/build/gitlab-ci.yml
+--- a/.gitlab-ci/build/gitlab-ci.yml	2026-10-14 23:12:24
++++ b/.gitlab-ci/build/gitlab-ci.yml	2026-10-23 14:08:44
+@@ -199,6 +199,7 @@
+     BUILDTYPE: "debugoptimized"
+     EXTRA_OPTION: >
+       -D spirv-to-dxil=true
++      -D osmesa=true
+       -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,lima,panfrost,asahi
+       -D panfrost-rust=true
+       -D perfetto=true
+@@ -230,6 +231,7 @@
+     VULKAN_DRIVERS: "swrast,intel_hasvk,imagination,microsoft-experimental"
+     EXTRA_OPTION: >
+       -D spirv-to-dxil=true
++      -D osmesa=true
+       -D tools=all
+       -D mesa-clc=enabled
+       -D panfrost-rust=true
+@@ -397,6 +399,7 @@
+       -D gbm=enabled
+       -D egl=enabled
+       -D platforms=x11,wayland
++      -D osmesa=false
+     GALLIUM_ST: >
+       -D gallium-va=disabled
+ 
+@@ -608,6 +611,7 @@
+     VULKAN_DRIVERS: intel,amd,freedreno,broadcom,virtio,swrast,panfrost,imagination,microsoft-experimental,nouveau
+     EXTRA_OPTION:
+       -D spirv-to-dxil=true
++      -D osmesa=true
+       -D imagination-srv=true
+       -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,lima,panfrost,asahi,imagination
+       -D panfrost-rust=true
+@@ -683,6 +687,7 @@
+       -D gles2=disabled
+       -D glvnd=disabled
+       -D platforms=x11,wayland
++      -D osmesa=false
+     GALLIUM_ST: >
+       -D gallium-va=disabled
+       -D gallium-rusticl=false
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/bin/gen_vs_module_defs.py mesa-26.2.5/bin/gen_vs_module_defs.py
+--- a/bin/gen_vs_module_defs.py	2026-10-14 23:12:24
++++ b/bin/gen_vs_module_defs.py	2026-10-23 14:08:44
+@@ -74,6 +74,9 @@
+ python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/libgl-gdi/opengl32.def.in --out_file src/gallium/targets/libgl-gdi/opengl32.def --compiler_abi gcc --cpu_family x86_64
+ python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/libgl-gdi/opengl32.def.in --out_file src/gallium/targets/libgl-gdi/opengl32.mingw.def --compiler_abi gcc --cpu_family x86
+ 
++python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/osmesa/osmesa.def.in --out_file src/gallium/targets/osmesa/osmesa.def --compiler_abi gcc --cpu_family x86_64
++python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/osmesa/osmesa.def.in --out_file src/gallium/targets/osmesa/osmesa.mingw.def --compiler_abi gcc --cpu_family x86
++
+ python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/wgl/gallium_wgl.def.in --out_file src/gallium/targets/wgl/gallium_wgl.def --compiler_abi gcc --cpu_family x86_64
+ python ./bin/gen_vs_module_defs.py --in_file src/gallium/targets/wgl/gallium_wgl.def.in --out_file src/gallium/targets/wgl/gallium_wgl.mingw.def --compiler_abi gcc --cpu_family x86
+ 
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/bin/khronos-update.py mesa-26.2.5/bin/khronos-update.py
+--- a/bin/khronos-update.py	2026-10-14 23:12:24
++++ b/bin/khronos-update.py	2026-10-23 14:08:44
+@@ -124,6 +124,7 @@
+             Source('include/GL/glx.h',               None),  # FIXME: I don't know what the canonical source is
+             Source('include/GL/internal/',           None),
+             Source('include/GL/mesa_glinterop.h',    None),
++            Source('include/GL/osmesa.h',            None),
+         ],
+     },
+ 
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/docs/faq.rst mesa-26.2.5/docs/faq.rst
+--- a/docs/faq.rst	2026-10-14 23:12:24
++++ b/docs/faq.rst	2026-10-23 14:08:44
+@@ -57,6 +57,8 @@
+    the OpenGL extensions header
+ ``/usr/include/GL/glxext.h``
+    the OpenGL GLX extensions header
++``/usr/include/GL/osmesa.h``
++   the Mesa off-screen rendering header
+ ``/usr/lib/libGL.so``
+    a symlink to ``libGL.so.1``
+ ``/usr/lib/libGL.so.1``
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/docs/install.rst mesa-26.2.5/docs/install.rst
+--- a/docs/install.rst	2026-10-14 23:12:24
++++ b/docs/install.rst	2026-10-23 14:08:44
+@@ -218,8 +218,12 @@
+    lrwxrwxrwx    1 brian    users          10 Mar 26 07:53 libGL.so -> libGL.so.1*
+    lrwxrwxrwx    1 brian    users          19 Mar 26 07:53 libGL.so.1 -> libGL.so.1.5.060100*
+    -rwxr-xr-x    1 brian    users     3375861 Mar 26 07:53 libGL.so.1.5.060100*
++   lrwxrwxrwx    1 brian    users          14 Mar 26 07:53 libOSMesa.so -> libOSMesa.so.6*
++   lrwxrwxrwx    1 brian    users          23 Mar 26 07:53 libOSMesa.so.6 -> libOSMesa.so.6.1.060100*
++   -rwxr-xr-x    1 brian    users       23871 Mar 26 07:53 libOSMesa.so.6.1.060100*
+ 
+-**libGL** is the main OpenGL library (i.e. Mesa).
++**libGL** is the main OpenGL library (i.e. Mesa), while **libOSMesa** is
++the OSMesa (Off-Screen) interface library.
+ 
+ If you built the DRI hardware drivers, you'll also see the DRI drivers:
+ 
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/docs/macos.rst mesa-26.2.5/docs/macos.rst
+--- a/docs/macos.rst	2026-10-14 23:12:24
++++ b/docs/macos.rst	2026-10-23 14:08:44
+@@ -15,4 +15,7 @@
+ hardware-accelerated system OpenGL framework, to provide hardware acceleration
+ to X11 applications on macOS running via XQuartz.
+ 
++Mesa's software rasterizers also work on macOS. To build, set the build options
++``-Dosmesa=true -Dglx=xlib``.
++
+ Mesa's Gallium drivers can be used on macOS by using the ``-Dgallium-drivers=<drivers>`` build option. Do not use with the previous software rasterizers options, instead add ``llvmpipe`` to the ``<drivers>`` list. Only software renderers and drivers that forward to other APIs can work, any linux hardware drivers will not work. For details on each driver's macOS support see their specific documentation.
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/include/GL/osmesa.h mesa-26.2.5/include/GL/osmesa.h
+--- a/include/GL/osmesa.h	1970-01-01 08:00:00
++++ b/include/GL/osmesa.h	2026-10-23 14:10:59
+@@ -0,0 +1,333 @@
++/*
++ * Mesa 3-D graphics library
++ * 
++ * Copyright (C) 1999-2005  Brian Paul   All Rights Reserved.
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ * 
++ * The above copyright notice and this permission notice shall be included
++ * in all copies or substantial portions of the Software.
++ * 
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
++ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
++ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
++ * OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++
++/*
++ * Mesa Off-Screen rendering interface.
++ *
++ * This is an operating system and window system independent interface to
++ * Mesa which allows one to render images into a client-supplied buffer in
++ * main memory.  Such images may manipulated or saved in whatever way the
++ * client wants.
++ *
++ * These are the API functions:
++ *   OSMesaCreateContext - create a new Off-Screen Mesa rendering context
++ *   OSMesaMakeCurrent - bind an OSMesaContext to a client's image buffer
++ *                       and make the specified context the current one.
++ *   OSMesaDestroyContext - destroy an OSMesaContext
++ *   OSMesaGetCurrentContext - return thread's current context ID
++ *   OSMesaPixelStore - controls how pixels are stored in image buffer
++ *   OSMesaGetIntegerv - return OSMesa state parameters
++ *
++ *
++ * The limits on the width and height of an image buffer can be retrieved
++ * via OSMesaGetIntegerv(OSMESA_MAX_WIDTH/OSMESA_MAX_HEIGHT).
++ */
++
++
++#ifndef OSMESA_H
++#define OSMESA_H
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++#include <GL/gl.h>
++
++
++#define OSMESA_MAJOR_VERSION 11
++#define OSMESA_MINOR_VERSION 2
++#define OSMESA_PATCH_VERSION 0
++
++
++
++/*
++ * Values for the format parameter of OSMesaCreateContext()
++ * New in version 2.0.
++ */
++#define OSMESA_COLOR_INDEX	GL_COLOR_INDEX
++#define OSMESA_RGBA		GL_RGBA
++#define OSMESA_BGRA		0x1
++#define OSMESA_ARGB		0x2
++#define OSMESA_RGB		GL_RGB
++#define OSMESA_BGR		0x4
++#define OSMESA_RGB_565		0x5
++
++
++/*
++ * OSMesaPixelStore() parameters:
++ * New in version 2.0.
++ */
++#define OSMESA_ROW_LENGTH	0x10
++#define OSMESA_Y_UP		0x11
++
++
++/*
++ * Accepted by OSMesaGetIntegerv:
++ */
++#define OSMESA_WIDTH		0x20
++#define OSMESA_HEIGHT		0x21
++#define OSMESA_FORMAT		0x22
++#define OSMESA_TYPE		0x23
++#define OSMESA_MAX_WIDTH	0x24  /* new in 4.0 */
++#define OSMESA_MAX_HEIGHT	0x25  /* new in 4.0 */
++
++/*
++ * Accepted in OSMesaCreateContextAttrib's attribute list.
++ */
++#define OSMESA_DEPTH_BITS            0x30
++#define OSMESA_STENCIL_BITS          0x31
++#define OSMESA_ACCUM_BITS            0x32
++#define OSMESA_PROFILE               0x33
++#define OSMESA_CORE_PROFILE          0x34
++#define OSMESA_COMPAT_PROFILE        0x35
++#define OSMESA_CONTEXT_MAJOR_VERSION 0x36
++#define OSMESA_CONTEXT_MINOR_VERSION 0x37
++#define OSMESA_ES_PROFILE            0x38  /* an OpenGL ES 2 or 3 context, by the version asked for */
++
++
++typedef struct osmesa_context *OSMesaContext;
++
++
++/*
++ * Create an Off-Screen Mesa rendering context.  The only attribute needed is
++ * an RGBA vs Color-Index mode flag.
++ *
++ * Input:  format - one of OSMESA_COLOR_INDEX, OSMESA_RGBA, OSMESA_BGRA,
++ *                  OSMESA_ARGB, OSMESA_RGB, or OSMESA_BGR.
++ *         sharelist - specifies another OSMesaContext with which to share
++ *                     display lists.  NULL indicates no sharing.
++ * Return:  an OSMesaContext or 0 if error
++ */
++GLAPI OSMesaContext APIENTRY
++OSMesaCreateContext( GLenum format, OSMesaContext sharelist );
++
++
++
++/*
++ * Create an Off-Screen Mesa rendering context and specify desired
++ * size of depth buffer, stencil buffer and accumulation buffer.
++ * If you specify zero for depthBits, stencilBits, accumBits you
++ * can save some memory.
++ *
++ * New in Mesa 3.5
++ */
++GLAPI OSMesaContext APIENTRY
++OSMesaCreateContextExt( GLenum format, GLint depthBits, GLint stencilBits,
++                        GLint accumBits, OSMesaContext sharelist);
++
++
++/*
++ * Create an Off-Screen Mesa rendering context with attribute list.
++ * The list is composed of (attribute, value) pairs and terminated with
++ * attribute==0.  Supported Attributes:
++ *
++ * Attributes                    Values
++ * --------------------------------------------------------------------------
++ * OSMESA_FORMAT                 OSMESA_RGBA*, OSMESA_BGRA, OSMESA_ARGB, etc.
++ * OSMESA_DEPTH_BITS             0*, 16, 24, 32
++ * OSMESA_STENCIL_BITS           0*, 8
++ * OSMESA_ACCUM_BITS             0*, 16
++ * OSMESA_PROFILE                OSMESA_COMPAT_PROFILE*, OSMESA_CORE_PROFILE
++ * OSMESA_CONTEXT_MAJOR_VERSION  1*, 2, 3
++ * OSMESA_CONTEXT_MINOR_VERSION  0+
++ *
++ * Note: * = default value
++ *
++ * We return a context version >= what's specified by OSMESA_CONTEXT_MAJOR/
++ * MINOR_VERSION for the given profile.  For example, if you request a GL 1.4
++ * compat profile, you might get a GL 3.0 compat profile.
++ * Otherwise, null is returned if the version/profile is not supported.
++ *
++ * New in Mesa 11.2
++ */
++GLAPI OSMesaContext APIENTRY
++OSMesaCreateContextAttribs( const int *attribList, OSMesaContext sharelist );
++
++
++
++/*
++ * Destroy an Off-Screen Mesa rendering context.
++ *
++ * Input:  ctx - the context to destroy
++ */
++GLAPI void APIENTRY
++OSMesaDestroyContext( OSMesaContext ctx );
++
++
++
++/*
++ * Bind an OSMesaContext to an image buffer.  The image buffer is just a
++ * block of memory which the client provides.  Its size must be at least
++ * as large as width*height*sizeof(type).  Its address should be a multiple
++ * of 4 if using RGBA mode.
++ *
++ * Image data is stored in the order of glDrawPixels:  row-major order
++ * with the lower-left image pixel stored in the first array position
++ * (ie. bottom-to-top).
++ *
++ * Since the only type initially supported is GL_UNSIGNED_BYTE, if the
++ * context is in RGBA mode, each pixel will be stored as a 4-byte RGBA
++ * value.  If the context is in color indexed mode, each pixel will be
++ * stored as a 1-byte value.
++ *
++ * If the context's viewport hasn't been initialized yet, it will now be
++ * initialized to (0,0,width,height).
++ *
++ * Input:  ctx - the rendering context
++ *         buffer - the image buffer memory
++ *         type - data type for pixel components, only GL_UNSIGNED_BYTE
++ *                supported now
++ *         width, height - size of image buffer in pixels, at least 1
++ * Return:  GL_TRUE if success, GL_FALSE if error because of invalid ctx,
++ *          invalid buffer address, type!=GL_UNSIGNED_BYTE, width<1, height<1,
++ *          width>internal limit or height>internal limit.
++ */
++GLAPI GLboolean APIENTRY
++OSMesaMakeCurrent( OSMesaContext ctx, void *buffer, GLenum type,
++                   GLsizei width, GLsizei height );
++
++
++
++
++/*
++ * Return the current Off-Screen Mesa rendering context handle.
++ */
++GLAPI OSMesaContext APIENTRY
++OSMesaGetCurrentContext( void );
++
++
++
++/*
++ * Set pixel store/packing parameters for the current context.
++ * This is similar to glPixelStore.
++ * Input:  pname - OSMESA_ROW_LENGTH
++ *                    specify actual pixels per row in image buffer
++ *                    0 = same as image width (default)
++ *                 OSMESA_Y_UP
++ *                    zero = Y coordinates increase downward
++ *                    non-zero = Y coordinates increase upward (default)
++ *         value - the value for the parameter pname
++ *
++ * New in version 2.0.
++ */
++GLAPI void APIENTRY
++OSMesaPixelStore( GLint pname, GLint value );
++
++
++
++/*
++ * Return an integer value like glGetIntegerv.
++ * Input:  pname -
++ *                 OSMESA_WIDTH  return current image width
++ *                 OSMESA_HEIGHT  return current image height
++ *                 OSMESA_FORMAT  return image format
++ *                 OSMESA_TYPE  return color component data type
++ *                 OSMESA_ROW_LENGTH return row length in pixels
++ *                 OSMESA_Y_UP returns 1 or 0 to indicate Y axis direction
++ *         value - pointer to integer in which to return result.
++ */
++GLAPI void APIENTRY
++OSMesaGetIntegerv( GLint pname, GLint *value );
++
++
++
++/*
++ * Return the depth buffer associated with an OSMesa context.
++ * Input:  c - the OSMesa context
++ * Output:  width, height - size of buffer in pixels
++ *          bytesPerValue - bytes per depth value (2 or 4)
++ *          buffer - pointer to depth buffer values
++ * Return:  GL_TRUE or GL_FALSE to indicate success or failure.
++ *
++ * New in Mesa 2.4.
++ */
++GLAPI GLboolean APIENTRY
++OSMesaGetDepthBuffer( OSMesaContext c, GLint *width, GLint *height,
++                      GLint *bytesPerValue, void **buffer );
++
++
++
++/*
++ * Return the color buffer associated with an OSMesa context.
++ * Input:  c - the OSMesa context
++ * Output:  width, height - size of buffer in pixels
++ *          format - buffer format (OSMESA_FORMAT)
++ *          buffer - pointer to depth buffer values
++ * Return:  GL_TRUE or GL_FALSE to indicate success or failure.
++ *
++ * New in Mesa 3.3.
++ */
++GLAPI GLboolean APIENTRY
++OSMesaGetColorBuffer( OSMesaContext c, GLint *width, GLint *height,
++                      GLint *format, void **buffer );
++
++
++
++/**
++ * This typedef is new in Mesa 6.3.
++ */
++typedef void (*OSMESAproc)();
++
++
++/*
++ * Return pointer to the named function.
++ * New in Mesa 4.1
++ * Return OSMESAproc in 6.3.
++ */
++GLAPI OSMESAproc APIENTRY
++OSMesaGetProcAddress( const char *funcName );
++
++
++
++/**
++ * Enable/disable color clamping, off by default.
++ * New in Mesa 6.4.2
++ */
++GLAPI void APIENTRY
++OSMesaColorClamp(GLboolean enable);
++
++
++/**
++ * Enable/disable Gallium post-process filters.
++ * This should be called after a context is created, but before it is
++ * made current for the first time.  After a context has been made
++ * current, this function has no effect.
++ * If the enable_value param is zero, the filter is disabled.  Otherwise
++ * the filter is enabled, and the value may control the filter's quality.
++ * New in Mesa 10.0
++ */
++GLAPI void APIENTRY
++OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
++                  unsigned enable_value);
++
++
++#ifdef __cplusplus
++}
++#endif
++
++
++#endif
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/include/meson.build mesa-26.2.5/include/meson.build
+--- a/include/meson.build	2026-10-14 23:12:24
++++ b/include/meson.build	2026-10-23 14:08:44
+@@ -78,6 +78,10 @@
+   )
+ endif
+ 
++if with_osmesa
++  install_headers('GL/osmesa.h', subdir : 'GL')
++endif
++
+ if with_dri
+   install_headers('GL/internal/dri_interface.h', subdir : 'GL/internal')
+ endif
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/meson.build mesa-26.2.5/meson.build
+--- a/meson.build	2026-10-23 14:36:12
++++ b/meson.build	2026-10-23 14:10:59
+@@ -108,6 +108,7 @@
+ with_aco_tests = get_option('build-aco-tests')
+ with_glx_read_only_text = get_option('glx-read-only-text')
+ with_glx_direct = get_option('glx-direct')
++with_osmesa = get_option('osmesa')
+ with_vulkan_overlay_layer = get_option('vulkan-layers').contains('overlay')
+ with_vulkan_device_select_layer = get_option('vulkan-layers').contains('device-select')
+ with_vulkan_screenshot_layer = get_option('vulkan-layers').contains('screenshot')
+@@ -2255,6 +2256,17 @@
+   pre_args += '-DHAVE_LIBUNWIND'
+ endif
+ 
++if with_osmesa
++  if not with_gallium_swrast
++    error('OSMesa gallium requires gallium softpipe or llvmpipe.')
++  endif
++  if host_machine.system() == 'windows'
++    osmesa_lib_name = 'osmesa'
++  else
++    osmesa_lib_name = 'OSMesa'
++  endif
++endif
++
+ # TODO: symbol mangling
+ 
+ with_wayland_bind_display = with_platform_wayland and get_option('legacy-wayland').contains('bind-wayland-display')
+@@ -2672,6 +2684,7 @@
+     gallium_frontends += 'rusticl'
+   endif
+   gallium_summary += {'Frontends': gallium_frontends}
++  gallium_summary += {'Off-screen rendering (OSMesa)': with_osmesa ? 'lib' + osmesa_lib_name : false}
+   gallium_summary += {'HUD lm-sensors': dep_lmsensors.found()}
+   gallium_summary += {'GFX/Compute': with_gfx_compute}
+ endif
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/meson.options mesa-26.2.5/meson.options
+--- a/meson.options	2026-10-14 23:12:24
++++ b/meson.options	2026-10-23 14:09:36
+@@ -333,6 +333,13 @@
+ )
+ 
+ option(
++  'osmesa',
++  type : 'boolean',
++  value : false,
++  description : 'Build OSmesa.',
++)
++
++option(
+   'gles1',
+   type : 'feature',
+   deprecated: {'true': 'enabled', 'false': 'disabled'},
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc mesa-26.2.5/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc	2026-10-23 14:36:12
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc	2026-10-23 14:12:27
+@@ -488,6 +488,27 @@
+        DRAW == DRAW_INDIRECT_OP_INDIRECT_COUNT)
+       ctx->batch->barrier |= FD6_WAIT_FOR_ME;
+ 
++   /* Darwin on redwood: a draw that reads the framebuffer reads it through
++    * UCHE.  Among primitives drawn with FLUSH_PER_OVERLAP the hardware sees
++    * to it that they read what the ones before them wrote, but it knows
++    * nothing of what was drawn before that mode was on: the first triangle
++    * to read the framebuffer after a draw that did not, read (with GMEM)
++    * pixels of another tile.  Seen on a642l with CoreAnimation, which draws
++    * a label's shadow that way over icons drawn the ordinary way: the first
++    * triangle of each such quad was wrong, the second right.  A CCU colour
++    * flush before the draw mends it, and so does a UCHE invalidate alone;
++    * the first such draw gets both, as a framebuffer barrier would give.
++    * On a8xx (a830, annibale) the read also goes through CCHE: with only
++    * those two, the first triangle still showed pixels of the other GMEM
++    * bin, until CCHE was invalidated as well.
++    */
++   if (unlikely(emit.fs->fb_read) && !ctx->batch->prev_draw_read_fb) {
++      ctx->batch->barrier |= FD6_FLUSH_CCU_COLOR | FD6_INVALIDATE_CACHE;
++      if (CHIP >= A8XX)
++         ctx->batch->barrier |= FD6_INVALIDATE_CCHE;
++   }
++   ctx->batch->prev_draw_read_fb = emit.fs->fb_read;
++
+    fd6_barrier_flush<CHIP>(cs, ctx->batch);
+ 
+    if (is_indirect(DRAW)) {
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/drivers/freedreno/meson.build mesa-26.2.5/src/gallium/drivers/freedreno/meson.build
+--- a/src/gallium/drivers/freedreno/meson.build	2026-10-23 14:36:12
++++ b/src/gallium/drivers/freedreno/meson.build	2026-10-23 14:21:51
+@@ -301,7 +301,7 @@
+ air_run = executable(
+   'air_run',
+   files('../../../compiler/air/air_run.c'),
+-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium,
++  include_directories : [inc_include, inc_src, include_directories('../../../mesa/glapi'), inc_mesa, inc_gallium,
+                          inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
+                          include_directories('../../drivers')],
+   dependencies : [dep_m, idep_air, idep_mesautil, driver_softpipe, driver_freedreno,
+@@ -328,7 +328,7 @@
+ libredwoodair = shared_library(
+   'redwoodair',
+   files('../../../compiler/air/air_metal.c'),
+-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium,
++  include_directories : [inc_include, inc_src, include_directories('../../../mesa/glapi'), inc_mesa, inc_gallium,
+                          inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
+                          include_directories('../../drivers')],
+   dependencies : [dep_m, idep_air, idep_mesautil, driver_softpipe, driver_freedreno,
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/frontends/osmesa/meson.build mesa-26.2.5/src/gallium/frontends/osmesa/meson.build
+--- a/src/gallium/frontends/osmesa/meson.build	1970-01-01 08:00:00
++++ b/src/gallium/frontends/osmesa/meson.build	2026-10-23 14:21:47
+@@ -0,0 +1,19 @@
++# Copyright © 2017-2018 Intel Corporation
++# SPDX-License-Identifier: MIT
++
++osmesa_st_c_args = []
++if with_platform_windows
++  if not with_shared_glapi
++    osmesa_st_c_args += ['-D_GLAPI_NO_EXPORTS']
++  endif
++endif
++
++libosmesa_st = static_library(
++  'osmesa_st',
++  'osmesa.c',
++  c_args : osmesa_st_c_args,
++  include_directories : [
++    inc_include, inc_src, inc_gallium, inc_gallium_aux, include_directories('../../../mesa/glapi'), inc_mesa,
++  ],
++  dependencies : [idep_mesautil],
++)
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/frontends/osmesa/osmesa.c mesa-26.2.5/src/gallium/frontends/osmesa/osmesa.c
+--- a/src/gallium/frontends/osmesa/osmesa.c	1970-01-01 08:00:00
++++ b/src/gallium/frontends/osmesa/osmesa.c	2026-10-23 14:24:37
+@@ -0,0 +1,999 @@
++/*
++ * Copyright (c) 2013  Brian Paul   All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included
++ * in all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
++ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
++ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
++ * OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++
++/*
++ * Off-Screen rendering into client memory.
++ * OpenGL gallium frontend for softpipe and llvmpipe.
++ *
++ * Notes:
++ *
++ * If Gallium is built with LLVM support we use the llvmpipe driver.
++ * Otherwise we use softpipe.  The GALLIUM_DRIVER environment variable
++ * may be set to "softpipe" or "llvmpipe" to override.
++ *
++ * With softpipe we could render directly into the user's buffer by using a
++ * display target resource.  However, softpipe doesn't support "upside-down"
++ * rendering which would be needed for the OSMESA_Y_UP=TRUE case.
++ *
++ * With llvmpipe we could only render directly into the user's buffer when its
++ * width and height is a multiple of the tile size (64 pixels).
++ *
++ * Because of these constraints we always render into ordinary resources then
++ * copy the results to the user's buffer in the flush_front() function which
++ * is called when the app calls glFlush/Finish.
++ *
++ * In general, the OSMesa interface is pretty ugly and not a good match
++ * for Gallium.  But we're interested in doing the best we can to preserve
++ * application portability.  With a little work we could come up with a
++ * much nicer, new off-screen Gallium interface...
++ */
++
++/**
++ * The following block is for avoid windows.h to be included
++ * and osmesa require APIENTRY to be defined
++ */
++#include "util/glheader.h"
++#ifndef APIENTRY
++#define APIENTRY GLAPIENTRY
++#endif
++#include "GL/osmesa.h"
++
++#include <stdio.h>
++#include <c11/threads.h>
++
++#include "state_tracker/st_context.h"
++
++#include "glapi/glapi.h"  /* for OSMesaGetProcAddress below */
++
++#include "pipe/p_context.h"
++#include "pipe/p_screen.h"
++#include "pipe/p_state.h"
++
++#include "util/u_atomic.h"
++#include "util/box.h"
++#include "util/u_debug.h"
++#include "util/format/u_format.h"
++#include "util/u_inlines.h"
++#include "util/u_memory.h"
++
++
++#include "frontend/api.h"
++
++
++
++extern struct pipe_screen *
++osmesa_create_screen(void);
++
++extern struct pipe_resource *
++osmesa_surface_resource(struct pipe_screen *screen, uint32_t surface);
++
++
++
++struct osmesa_buffer
++{
++   struct pipe_frontend_drawable base;
++   struct st_visual visual;
++   unsigned width, height;
++
++   struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
++
++   void *map;
++
++   struct osmesa_buffer *next;  /**< next in linked list */
++};
++
++
++struct osmesa_context
++{
++   struct st_context *st;
++
++   bool ever_used;     /*< Has this context ever been current? */
++
++   struct osmesa_buffer *current_buffer;
++
++   /* Storage for depth/stencil, if the user has requested access.  The backing
++    * driver always has its own storage for the actual depth/stencil, which we
++    * have to transfer in and out.
++    */
++   void *zs;
++   unsigned zs_stride;
++
++   enum pipe_format depth_stencil_format, accum_format;
++
++   GLenum format;         /*< User-specified context format */
++   GLenum type;           /*< Buffer's data type */
++   GLint user_row_length; /*< user-specified number of pixels per row */
++   GLboolean y_up;        /*< TRUE  -> Y increases upward */
++                          /*< FALSE -> Y increases downward */
++
++   /* Darwin on redwood: upstream's postprocess stage (filters.h, pp_queue_t) is gone in 26.x;
++    * OSMesaPostprocess() below stays a no-op: this port never used a filter. */
++};
++
++/**
++ * Called from the ST manager.
++ */
++static int
++osmesa_st_get_param(struct pipe_frontend_screen *fscreen, enum st_manager_param param)
++{
++   /* no-op */
++   return 0;
++}
++
++static struct pipe_frontend_screen *global_fscreen = NULL;
++
++static void
++destroy_st_manager(void)
++{
++   if (global_fscreen) {
++      if (global_fscreen->screen)
++         global_fscreen->screen->destroy(global_fscreen->screen);
++      FREE(global_fscreen);
++   }
++}
++
++/*
++ * There is no EGL here. What glEGLImageTargetTexture2DOES is given as an image is the ID of an
++ * IOSurface, whose memory becomes the texture's where the driver can do that (Darwin on redwood).
++ */
++static bool
++osmesa_st_get_egl_image(struct pipe_frontend_screen *fscreen, void *image,
++                        struct st_egl_image *out)
++{
++   out->texture = osmesa_surface_resource(fscreen->screen,
++                                          (uint32_t)(uintptr_t)image);
++   if (!out->texture)
++      return false;
++   out->format = out->texture->format;
++   return true;
++}
++
++static bool
++osmesa_st_validate_egl_image(struct pipe_frontend_screen *fscreen, void *image)
++{
++   return true;
++}
++
++static void
++create_st_manager(void)
++{
++   if (atexit(destroy_st_manager) != 0)
++      return;
++
++   global_fscreen = CALLOC_STRUCT(pipe_frontend_screen);
++   if (global_fscreen) {
++      global_fscreen->screen = osmesa_create_screen();
++      global_fscreen->get_param = osmesa_st_get_param;
++      global_fscreen->get_egl_image = osmesa_st_get_egl_image;
++      global_fscreen->validate_egl_image = osmesa_st_validate_egl_image;
++   }
++}
++
++/**
++ * Create/return a singleton st_manager object.
++ */
++static struct pipe_frontend_screen *
++get_st_manager(void)
++{
++   static once_flag create_once_flag = ONCE_FLAG_INIT;
++
++   call_once(&create_once_flag, create_st_manager);
++
++   return global_fscreen;
++}
++
++/* Reads the color or depth buffer from the backing context to either the user storage
++ * (color buffer) or our temporary (z/s)
++ */
++static void
++osmesa_read_buffer(OSMesaContext osmesa, struct pipe_resource *res, void *dst,
++                   int dst_stride, bool y_up)
++{
++   struct pipe_context *pipe = osmesa->st->pipe;
++
++   struct pipe_box box;
++   u_box_2d(0, 0, res->width0, res->height0, &box);
++
++   struct pipe_transfer *transfer = NULL;
++   uint8_t *src = pipe->texture_map(pipe, res, 0, PIPE_MAP_READ, &box,
++                                   &transfer);
++
++   /*
++    * Copy the color buffer from the resource to the user's buffer.
++    */
++
++   if (y_up) {
++      /* need to flip image upside down */
++      dst = (uint8_t *)dst + (res->height0 - 1) * dst_stride;
++      dst_stride = -dst_stride;
++   }
++
++   unsigned bpp = util_format_get_blocksize(res->format);
++   for (unsigned y = 0; y < res->height0; y++)
++   {
++      memcpy(dst, src, bpp * res->width0);
++      dst = (uint8_t *)dst + dst_stride;
++      src += transfer->stride;
++   }
++
++   pipe->texture_unmap(pipe, transfer);
++}
++
++
++/**
++ * Given an OSMESA_x format and a GL_y type, return the best
++ * matching PIPE_FORMAT_z.
++ * Note that we can't exactly match all user format/type combinations
++ * with gallium formats.  If we find this to be a problem, we can
++ * implement more elaborate format/type conversion in the flush_front()
++ * function.
++ */
++static enum pipe_format
++osmesa_choose_format(GLenum format, GLenum type)
++{
++   switch (format) {
++   case OSMESA_RGBA:
++      if (type == GL_UNSIGNED_BYTE) {
++#if UTIL_ARCH_LITTLE_ENDIAN
++         return PIPE_FORMAT_R8G8B8A8_UNORM;
++#else
++         return PIPE_FORMAT_A8B8G8R8_UNORM;
++#endif
++      }
++      else if (type == GL_UNSIGNED_SHORT) {
++         return PIPE_FORMAT_R16G16B16A16_UNORM;
++      }
++      else if (type == GL_FLOAT) {
++         return PIPE_FORMAT_R32G32B32A32_FLOAT;
++      }
++      else {
++         return PIPE_FORMAT_NONE;
++      }
++      break;
++   case OSMESA_BGRA:
++      if (type == GL_UNSIGNED_BYTE) {
++#if UTIL_ARCH_LITTLE_ENDIAN
++         return PIPE_FORMAT_B8G8R8A8_UNORM;
++#else
++         return PIPE_FORMAT_A8R8G8B8_UNORM;
++#endif
++      }
++      else if (type == GL_UNSIGNED_SHORT) {
++         return PIPE_FORMAT_R16G16B16A16_UNORM;
++      }
++      else if (type == GL_FLOAT) {
++         return PIPE_FORMAT_R32G32B32A32_FLOAT;
++      }
++      else {
++         return PIPE_FORMAT_NONE;
++      }
++      break;
++   case OSMESA_ARGB:
++      if (type == GL_UNSIGNED_BYTE) {
++#if UTIL_ARCH_LITTLE_ENDIAN
++         return PIPE_FORMAT_A8R8G8B8_UNORM;
++#else
++         return PIPE_FORMAT_B8G8R8A8_UNORM;
++#endif
++      }
++      else if (type == GL_UNSIGNED_SHORT) {
++         return PIPE_FORMAT_R16G16B16A16_UNORM;
++      }
++      else if (type == GL_FLOAT) {
++         return PIPE_FORMAT_R32G32B32A32_FLOAT;
++      }
++      else {
++         return PIPE_FORMAT_NONE;
++      }
++      break;
++   case OSMESA_RGB:
++      if (type == GL_UNSIGNED_BYTE) {
++         return PIPE_FORMAT_R8G8B8_UNORM;
++      }
++      else if (type == GL_UNSIGNED_SHORT) {
++         return PIPE_FORMAT_R16G16B16_UNORM;
++      }
++      else if (type == GL_FLOAT) {
++         return PIPE_FORMAT_R32G32B32_FLOAT;
++      }
++      else {
++         return PIPE_FORMAT_NONE;
++      }
++      break;
++   case OSMESA_BGR:
++      /* No gallium format for this one */
++      return PIPE_FORMAT_NONE;
++   case OSMESA_RGB_565:
++      if (type != GL_UNSIGNED_SHORT_5_6_5)
++         return PIPE_FORMAT_NONE;
++      return PIPE_FORMAT_B5G6R5_UNORM;
++   default:
++      return PIPE_FORMAT_NONE;
++   }
++}
++
++
++/**
++ * Initialize an st_visual object.
++ */
++static void
++osmesa_init_st_visual(struct st_visual *vis,
++                      enum pipe_format color_format,
++                      enum pipe_format ds_format,
++                      enum pipe_format accum_format)
++{
++   vis->buffer_mask = ST_ATTACHMENT_FRONT_LEFT_MASK;
++
++   if (ds_format != PIPE_FORMAT_NONE)
++      vis->buffer_mask |= ST_ATTACHMENT_DEPTH_STENCIL_MASK;
++   if (accum_format != PIPE_FORMAT_NONE)
++      vis->buffer_mask |= ST_ATTACHMENT_ACCUM;
++
++   vis->color_format = color_format;
++   vis->depth_stencil_format = ds_format;
++   vis->accum_format = accum_format;
++   vis->samples = 1;
++}
++
++
++/**
++ * Return the osmesa_buffer that corresponds to an pipe_frontend_drawable.
++ */
++static inline struct osmesa_buffer *
++drawable_to_osbuffer(struct pipe_frontend_drawable *drawable)
++{
++   return (struct osmesa_buffer *)drawable;
++}
++
++
++/**
++ * Called via glFlush/glFinish.  This is where we copy the contents
++ * of the driver's color buffer into the user-specified buffer.
++ */
++static bool
++osmesa_st_framebuffer_flush_front(struct st_context *st,
++                                  struct pipe_frontend_drawable *drawable,
++                                  enum st_attachment_type statt)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++   struct osmesa_buffer *osbuffer = drawable_to_osbuffer(drawable);
++   struct pipe_resource *res = osbuffer->textures[statt];
++   unsigned bpp;
++   int dst_stride;
++
++   if (statt != ST_ATTACHMENT_FRONT_LEFT)
++      return false;
++
++   /* Snapshot the color buffer to the user's buffer. */
++   bpp = util_format_get_blocksize(osbuffer->visual.color_format);
++   if (osmesa->user_row_length)
++      dst_stride = bpp * osmesa->user_row_length;
++   else
++      dst_stride = bpp * osbuffer->width;
++
++   osmesa_read_buffer(osmesa, res, osbuffer->map, dst_stride, osmesa->y_up);
++
++   /* If the user has requested the Z/S buffer, then snapshot that one too. */
++   if (osmesa->zs) {
++      osmesa_read_buffer(osmesa, osbuffer->textures[ST_ATTACHMENT_DEPTH_STENCIL],
++                         osmesa->zs, osmesa->zs_stride, true);
++   }
++
++   return true;
++}
++
++
++/**
++ * Called by the st manager to validate the framebuffer (allocate
++ * its resources).
++ */
++static bool
++osmesa_st_framebuffer_validate(struct st_context *st,
++                               struct pipe_frontend_drawable *drawable,
++                               const enum st_attachment_type *statts,
++                               unsigned count,
++                               struct pipe_resource **out,
++                               struct pipe_resource **resolve)
++{
++   struct pipe_screen *screen = get_st_manager()->screen;
++   enum st_attachment_type i;
++   struct osmesa_buffer *osbuffer = drawable_to_osbuffer(drawable);
++   struct pipe_resource templat;
++
++   memset(&templat, 0, sizeof(templat));
++   templat.target = PIPE_TEXTURE_RECT;
++   templat.format = 0; /* setup below */
++   templat.last_level = 0;
++   templat.width0 = osbuffer->width;
++   templat.height0 = osbuffer->height;
++   templat.depth0 = 1;
++   templat.array_size = 1;
++   templat.usage = PIPE_USAGE_DEFAULT;
++   templat.bind = 0; /* setup below */
++   templat.flags = 0;
++
++   for (i = 0; i < count; i++) {
++      enum pipe_format format = PIPE_FORMAT_NONE;
++      unsigned bind = 0;
++
++      /*
++       * At this time, we really only need to handle the front-left color
++       * attachment, since that's all we specified for the visual in
++       * osmesa_init_st_visual().
++       */
++      if (statts[i] == ST_ATTACHMENT_FRONT_LEFT) {
++         format = osbuffer->visual.color_format;
++         bind = PIPE_BIND_RENDER_TARGET;
++      }
++      else if (statts[i] == ST_ATTACHMENT_DEPTH_STENCIL) {
++         format = osbuffer->visual.depth_stencil_format;
++         bind = PIPE_BIND_DEPTH_STENCIL;
++      }
++      else if (statts[i] == ST_ATTACHMENT_ACCUM) {
++         format = osbuffer->visual.accum_format;
++         bind = PIPE_BIND_RENDER_TARGET;
++      }
++      else {
++         debug_warning("Unexpected attachment type in "
++                       "osmesa_st_framebuffer_validate()");
++      }
++
++      templat.format = format;
++      templat.bind = bind;
++      pipe_resource_reference(&out[i], NULL);
++      out[i] = osbuffer->textures[statts[i]] =
++         screen->resource_create(screen, &templat);
++   }
++
++   return true;
++}
++
++static uint32_t osmesa_fb_ID = 0;
++
++
++/**
++ * Create new buffer and add to linked list.
++ */
++static struct osmesa_buffer *
++osmesa_create_buffer(enum pipe_format color_format,
++                     enum pipe_format ds_format,
++                     enum pipe_format accum_format)
++{
++   struct osmesa_buffer *osbuffer = CALLOC_STRUCT(osmesa_buffer);
++   if (osbuffer) {
++      osbuffer->base.flush_front = osmesa_st_framebuffer_flush_front;
++      osbuffer->base.validate = osmesa_st_framebuffer_validate;
++      p_atomic_set(&osbuffer->base.stamp, 1);
++      osbuffer->base.ID = p_atomic_inc_return(&osmesa_fb_ID);
++      osbuffer->base.fscreen = get_st_manager();
++      osbuffer->base.visual = &osbuffer->visual;
++
++      osmesa_init_st_visual(&osbuffer->visual, color_format,
++                            ds_format, accum_format);
++   }
++
++   return osbuffer;
++}
++
++
++static void
++osmesa_destroy_buffer(struct osmesa_buffer *osbuffer)
++{
++   /*
++    * Notify the state manager that the associated framebuffer interface
++    * is no longer valid.
++    */
++   st_api_destroy_drawable(&osbuffer->base);
++
++   FREE(osbuffer);
++}
++
++
++
++/**********************************************************************/
++/*****                    Public Functions                        *****/
++/**********************************************************************/
++
++
++/**
++ * Create an Off-Screen Mesa rendering context.  The only attribute needed is
++ * an RGBA vs Color-Index mode flag.
++ *
++ * Input:  format - Must be GL_RGBA
++ *         sharelist - specifies another OSMesaContext with which to share
++ *                     display lists.  NULL indicates no sharing.
++ * Return:  an OSMesaContext or 0 if error
++ */
++GLAPI OSMesaContext GLAPIENTRY
++OSMesaCreateContext(GLenum format, OSMesaContext sharelist)
++{
++   return OSMesaCreateContextExt(format, 24, 8, 0, sharelist);
++}
++
++
++/**
++ * New in Mesa 3.5
++ *
++ * Create context and specify size of ancillary buffers.
++ */
++GLAPI OSMesaContext GLAPIENTRY
++OSMesaCreateContextExt(GLenum format, GLint depthBits, GLint stencilBits,
++                       GLint accumBits, OSMesaContext sharelist)
++{
++   int attribs[100], n = 0;
++
++   attribs[n++] = OSMESA_FORMAT;
++   attribs[n++] = format;
++   attribs[n++] = OSMESA_DEPTH_BITS;
++   attribs[n++] = depthBits;
++   attribs[n++] = OSMESA_STENCIL_BITS;
++   attribs[n++] = stencilBits;
++   attribs[n++] = OSMESA_ACCUM_BITS;
++   attribs[n++] = accumBits;
++   attribs[n++] = 0;
++
++   return OSMesaCreateContextAttribs(attribs, sharelist);
++}
++
++
++/**
++ * New in Mesa 11.2
++ *
++ * Create context with attribute list.
++ */
++GLAPI OSMesaContext GLAPIENTRY
++OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
++{
++   OSMesaContext osmesa;
++   struct st_context *st_shared;
++   enum st_context_error st_error = 0;
++   struct st_context_attribs attribs;
++   GLenum format = GL_RGBA;
++   int depthBits = 0, stencilBits = 0, accumBits = 0;
++   int profile = OSMESA_COMPAT_PROFILE, version_major = 1, version_minor = 0;
++   int i;
++
++   if (sharelist) {
++      st_shared = sharelist->st;
++   }
++   else {
++      st_shared = NULL;
++   }
++
++   for (i = 0; attribList[i]; i += 2) {
++      switch (attribList[i]) {
++      case OSMESA_FORMAT:
++         format = attribList[i+1];
++         switch (format) {
++         case OSMESA_COLOR_INDEX:
++         case OSMESA_RGBA:
++         case OSMESA_BGRA:
++         case OSMESA_ARGB:
++         case OSMESA_RGB:
++         case OSMESA_BGR:
++         case OSMESA_RGB_565:
++            /* legal */
++            break;
++         default:
++            return NULL;
++         }
++         break;
++      case OSMESA_DEPTH_BITS:
++         depthBits = attribList[i+1];
++         if (depthBits < 0)
++            return NULL;
++         break;
++      case OSMESA_STENCIL_BITS:
++         stencilBits = attribList[i+1];
++         if (stencilBits < 0)
++            return NULL;
++         break;
++      case OSMESA_ACCUM_BITS:
++         accumBits = attribList[i+1];
++         if (accumBits < 0)
++            return NULL;
++         break;
++      case OSMESA_PROFILE:
++         profile = attribList[i+1];
++         if (profile != OSMESA_CORE_PROFILE &&
++             profile != OSMESA_COMPAT_PROFILE &&
++             profile != OSMESA_ES_PROFILE)
++            return NULL;
++         break;
++      case OSMESA_CONTEXT_MAJOR_VERSION:
++         version_major = attribList[i+1];
++         if (version_major < 1)
++            return NULL;
++         break;
++      case OSMESA_CONTEXT_MINOR_VERSION:
++         version_minor = attribList[i+1];
++         if (version_minor < 0)
++            return NULL;
++         break;
++      case 0:
++         /* end of list */
++         break;
++      default:
++         fprintf(stderr, "Bad attribute in OSMesaCreateContextAttribs()\n");
++         return NULL;
++      }
++   }
++
++   osmesa = (OSMesaContext) CALLOC_STRUCT(osmesa_context);
++   if (!osmesa)
++      return NULL;
++
++   /* Choose depth/stencil/accum buffer formats */
++   if (accumBits > 0) {
++      osmesa->accum_format = PIPE_FORMAT_R16G16B16A16_SNORM;
++   }
++   if (depthBits > 0 && stencilBits > 0) {
++      osmesa->depth_stencil_format = PIPE_FORMAT_Z24_UNORM_S8_UINT;
++   }
++   else if (stencilBits > 0) {
++      osmesa->depth_stencil_format = PIPE_FORMAT_S8_UINT;
++   }
++   else if (depthBits >= 24) {
++      osmesa->depth_stencil_format = PIPE_FORMAT_Z24X8_UNORM;
++   }
++   else if (depthBits >= 16) {
++      osmesa->depth_stencil_format = PIPE_FORMAT_Z16_UNORM;
++   }
++
++   /*
++    * Create the rendering context
++    */
++   memset(&attribs, 0, sizeof(attribs));
++   attribs.profile = (profile == OSMESA_ES_PROFILE) ? API_OPENGLES2 :
++      (profile == OSMESA_CORE_PROFILE) ? API_OPENGL_CORE : API_OPENGL_COMPAT;
++   attribs.major = version_major;
++   attribs.minor = version_minor;
++   attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
++   attribs.options.force_glsl_extensions_warn = false;
++   attribs.options.disable_blend_func_extended = false;
++   attribs.options.disable_glsl_line_continuations = false;
++   attribs.options.force_glsl_version = 0;
++
++   osmesa_init_st_visual(&attribs.visual,
++                         PIPE_FORMAT_NONE,
++                         osmesa->depth_stencil_format,
++                         osmesa->accum_format);
++
++   osmesa->st = st_api_create_context(get_st_manager(),
++                                         &attribs, &st_error, st_shared);
++   if (!osmesa->st) {
++      FREE(osmesa);
++      return NULL;
++   }
++
++   osmesa->st->frontend_context = osmesa;
++
++   osmesa->format = format;
++   osmesa->user_row_length = 0;
++   osmesa->y_up = GL_TRUE;
++
++   return osmesa;
++}
++
++
++
++/**
++ * Destroy an Off-Screen Mesa rendering context.
++ *
++ * \param osmesa  the context to destroy
++ */
++GLAPI void GLAPIENTRY
++OSMesaDestroyContext(OSMesaContext osmesa)
++{
++   if (osmesa) {
++      /* the postprocess queue pp_free() released is gone in 26.x */
++      st_destroy_context(osmesa->st);
++      free(osmesa->zs);
++      FREE(osmesa);
++   }
++}
++
++
++/**
++ * Bind an OSMesaContext to an image buffer.  The image buffer is just a
++ * block of memory which the client provides.  Its size must be at least
++ * as large as width*height*pixelSize.  Its address should be a multiple
++ * of 4 if using RGBA mode.
++ *
++ * By default, image data is stored in the order of glDrawPixels: row-major
++ * order with the lower-left image pixel stored in the first array position
++ * (ie. bottom-to-top).
++ *
++ * If the context's viewport hasn't been initialized yet, it will now be
++ * initialized to (0,0,width,height).
++ *
++ * Input:  osmesa - the rendering context
++ *         buffer - the image buffer memory
++ *         type - data type for pixel components
++ *                GL_UNSIGNED_BYTE, GL_UNSIGNED_SHORT_5_6_5, GL_UNSIGNED_SHORT
++ *                or GL_FLOAT.
++ *         width, height - size of image buffer in pixels, at least 1
++ * Return:  GL_TRUE if success, GL_FALSE if error because of invalid osmesa,
++ *          invalid type, invalid size, etc.
++ */
++GLAPI GLboolean GLAPIENTRY
++OSMesaMakeCurrent(OSMesaContext osmesa, void *buffer, GLenum type,
++                  GLsizei width, GLsizei height)
++{
++   enum pipe_format color_format;
++
++   if (!osmesa && !buffer) {
++      st_api_make_current(NULL, NULL, NULL);
++      return GL_TRUE;
++   }
++
++   if (!osmesa || !buffer || width < 1 || height < 1) {
++      return GL_FALSE;
++   }
++
++   color_format = osmesa_choose_format(osmesa->format, type);
++   if (color_format == PIPE_FORMAT_NONE) {
++      fprintf(stderr, "OSMesaMakeCurrent(unsupported format/type)\n");
++      return GL_FALSE;
++   }
++
++   /* See if we already have a buffer that uses these pixel formats */
++   if (osmesa->current_buffer &&
++       (osmesa->current_buffer->visual.color_format != color_format ||
++        osmesa->current_buffer->visual.depth_stencil_format != osmesa->depth_stencil_format ||
++        osmesa->current_buffer->visual.accum_format != osmesa->accum_format ||
++        osmesa->current_buffer->width != width ||
++        osmesa->current_buffer->height != height)) {
++      osmesa_destroy_buffer(osmesa->current_buffer);
++      osmesa->current_buffer = NULL;
++   }
++
++   if (!osmesa->current_buffer) {
++      osmesa->current_buffer = osmesa_create_buffer(color_format,
++                                      osmesa->depth_stencil_format,
++                                      osmesa->accum_format);
++   }
++
++   struct osmesa_buffer *osbuffer = osmesa->current_buffer;
++
++   osbuffer->width = width;
++   osbuffer->height = height;
++   osbuffer->map = buffer;
++
++   osmesa->type = type;
++
++   st_api_make_current(osmesa->st, &osbuffer->base, &osbuffer->base);
++
++   /* XXX: We should probably load the current color value into the buffer here
++    * to match classic swrast behavior (context's fb starts with the contents of
++    * your pixel buffer).
++    */
++
++   /* postprocess (the only one-time init upstream had) is gone in 26.x: */
++   osmesa->ever_used = true;
++
++   return GL_TRUE;
++}
++
++
++
++GLAPI OSMesaContext GLAPIENTRY
++OSMesaGetCurrentContext(void)
++{
++   struct st_context *st = st_api_get_current();
++   return st ? (OSMesaContext) st->frontend_context : NULL;
++}
++
++
++
++GLAPI void GLAPIENTRY
++OSMesaPixelStore(GLint pname, GLint value)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++
++   switch (pname) {
++   case OSMESA_ROW_LENGTH:
++      osmesa->user_row_length = value;
++      break;
++   case OSMESA_Y_UP:
++      osmesa->y_up = value ? GL_TRUE : GL_FALSE;
++      break;
++   default:
++      fprintf(stderr, "Invalid pname in OSMesaPixelStore()\n");
++      return;
++   }
++}
++
++
++GLAPI void GLAPIENTRY
++OSMesaGetIntegerv(GLint pname, GLint *value)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++   struct osmesa_buffer *osbuffer = osmesa ? osmesa->current_buffer : NULL;
++
++   switch (pname) {
++   case OSMESA_WIDTH:
++      *value = osbuffer ? osbuffer->width : 0;
++      return;
++   case OSMESA_HEIGHT:
++      *value = osbuffer ? osbuffer->height : 0;
++      return;
++   case OSMESA_FORMAT:
++      *value = osmesa->format;
++      return;
++   case OSMESA_TYPE:
++      /* current color buffer's data type */
++      *value = osmesa->type;
++      return;
++   case OSMESA_ROW_LENGTH:
++      *value = osmesa->user_row_length;
++      return;
++   case OSMESA_Y_UP:
++      *value = osmesa->y_up;
++      return;
++   case OSMESA_MAX_WIDTH:
++      FALLTHROUGH;
++   case OSMESA_MAX_HEIGHT:
++      {
++         struct pipe_screen *screen = get_st_manager()->screen;
++         *value = screen->caps.max_texture_2d_size;
++      }
++      return;
++   default:
++      fprintf(stderr, "Invalid pname in OSMesaGetIntegerv()\n");
++      return;
++   }
++}
++
++
++/**
++ * Return information about the depth buffer associated with an OSMesa context.
++ * Input:  c - the OSMesa context
++ * Output:  width, height - size of buffer in pixels
++ *          bytesPerValue - bytes per depth value (2 or 4)
++ *          buffer - pointer to depth buffer values
++ * Return:  GL_TRUE or GL_FALSE to indicate success or failure.
++ */
++GLAPI GLboolean GLAPIENTRY
++OSMesaGetDepthBuffer(OSMesaContext c, GLint *width, GLint *height,
++                     GLint *bytesPerValue, void **buffer)
++{
++   struct osmesa_buffer *osbuffer = c->current_buffer;
++   struct pipe_resource *res = osbuffer->textures[ST_ATTACHMENT_DEPTH_STENCIL];
++
++   if (!res) {
++      *width = 0;
++      *height = 0;
++      *bytesPerValue = 0;
++      *buffer = NULL;
++      return GL_FALSE;
++   }
++
++   *width = res->width0;
++   *height = res->height0;
++   *bytesPerValue = util_format_get_blocksize(res->format);
++
++   if (!c->zs) {
++      c->zs_stride = *width * *bytesPerValue;
++      c->zs = calloc(c->zs_stride, *height);
++      if (!c->zs)
++         return GL_FALSE;
++
++      osmesa_read_buffer(c, res, c->zs, c->zs_stride, true);
++   }
++
++   *buffer = c->zs;
++
++   return GL_TRUE;
++}
++
++
++/**
++ * Return the color buffer associated with an OSMesa context.
++ * Input:  c - the OSMesa context
++ * Output:  width, height - size of buffer in pixels
++ *          format - the pixel format (OSMESA_FORMAT)
++ *          buffer - pointer to color buffer values
++ * Return:  GL_TRUE or GL_FALSE to indicate success or failure.
++ */
++GLAPI GLboolean GLAPIENTRY
++OSMesaGetColorBuffer(OSMesaContext osmesa, GLint *width,
++                      GLint *height, GLint *format, void **buffer)
++{
++   struct osmesa_buffer *osbuffer = osmesa->current_buffer;
++
++   if (osbuffer) {
++      *width = osbuffer->width;
++      *height = osbuffer->height;
++      *format = osmesa->format;
++      *buffer = osbuffer->map;
++      return GL_TRUE;
++   }
++   else {
++      *width = 0;
++      *height = 0;
++      *format = 0;
++      *buffer = 0;
++      return GL_FALSE;
++   }
++}
++
++
++struct name_function
++{
++   const char *Name;
++   OSMESAproc Function;
++};
++
++static struct name_function functions[] = {
++   { "OSMesaCreateContext", (OSMESAproc) OSMesaCreateContext },
++   { "OSMesaCreateContextExt", (OSMESAproc) OSMesaCreateContextExt },
++   { "OSMesaCreateContextAttribs", (OSMESAproc) OSMesaCreateContextAttribs },
++   { "OSMesaDestroyContext", (OSMESAproc) OSMesaDestroyContext },
++   { "OSMesaMakeCurrent", (OSMESAproc) OSMesaMakeCurrent },
++   { "OSMesaGetCurrentContext", (OSMESAproc) OSMesaGetCurrentContext },
++   { "OSMesaPixelStore", (OSMESAproc) OSMesaPixelStore },
++   { "OSMesaGetIntegerv", (OSMESAproc) OSMesaGetIntegerv },
++   { "OSMesaGetDepthBuffer", (OSMESAproc) OSMesaGetDepthBuffer },
++   { "OSMesaGetColorBuffer", (OSMESAproc) OSMesaGetColorBuffer },
++   { "OSMesaGetProcAddress", (OSMESAproc) OSMesaGetProcAddress },
++   { "OSMesaColorClamp", (OSMESAproc) OSMesaColorClamp },
++   { "OSMesaPostprocess", (OSMESAproc) OSMesaPostprocess },
++   { NULL, NULL }
++};
++
++
++GLAPI OSMESAproc GLAPIENTRY
++OSMesaGetProcAddress(const char *funcName)
++{
++   int i;
++   for (i = 0; functions[i].Name; i++) {
++      if (strcmp(functions[i].Name, funcName) == 0)
++         return functions[i].Function;
++   }
++   return _mesa_glapi_get_proc_address(funcName);
++}
++
++
++GLAPI void GLAPIENTRY
++OSMesaColorClamp(GLboolean enable)
++{
++   extern void GLAPIENTRY _mesa_ClampColor(GLenum target, GLenum clamp);
++
++   _mesa_ClampColor(GL_CLAMP_FRAGMENT_COLOR_ARB,
++                    enable ? GL_TRUE : GL_FIXED_ONLY_ARB);
++}
++
++
++GLAPI void GLAPIENTRY
++OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
++                  unsigned enable_value)
++{
++   /* Darwin on redwood: upstream's postprocess filters are gone in 26.x; the entry stays so
++    * anything linked against this library still resolves it. Nothing to record: no filter
++    * can be enabled any more. */
++   (void) osmesa;
++   (void) filter;
++   (void) enable_value;
++
++}
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/meson.build mesa-26.2.5/src/gallium/meson.build
+--- a/src/gallium/meson.build	2026-10-14 23:12:24
++++ b/src/gallium/meson.build	2026-10-23 14:09:36
+@@ -232,6 +232,10 @@
+   subdir('frontends/dri')
+   subdir('targets/dri')
+ endif
++if with_osmesa
++  subdir('frontends/osmesa')
++  subdir('targets/osmesa')
++endif
+ if with_platform_haiku
+   subdir('frontends/hgl')
+ endif
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/meson.build mesa-26.2.5/src/gallium/targets/osmesa/meson.build
+--- a/src/gallium/targets/osmesa/meson.build	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/meson.build	2026-10-23 14:35:03
+@@ -0,0 +1,84 @@
++# Copyright © 2017 Intel Corporation
++# SPDX-License-Identifier: MIT
++
++osmesa_link_with = []
++osmesa_link_args = []
++osmesa_link_deps = []
++
++if with_ld_version_script
++  osmesa_link_args += [
++    '-Wl,--version-script', join_paths(meson.current_source_dir(), 'osmesa.sym')
++  ]
++  osmesa_link_deps += files('osmesa.sym')
++endif
++
++osmesa_def = custom_target(
++  'osmesa.def',
++  input: 'osmesa.def.in',
++  output : 'osmesa.def',
++  command : gen_vs_module_defs_normal_command,
++)
++
++libosmesa = shared_library(
++  osmesa_lib_name,
++  'osmesa_target.c',
++  gnu_symbol_visibility : 'hidden',
++  link_args : [ld_args_gc_sections, osmesa_link_args],
++  vs_module_defs : osmesa_def,
++  include_directories : [
++    inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_winsys,
++    inc_gallium_drivers,
++  ],
++  link_depends : osmesa_link_deps,
++  # Darwin on redwood: with shared-glapi the gl* entry stubs live in the glapi bridge,
++  # which nothing else in this link pulls in. On Linux the version script reaches them
++  # through libglapi; on macOS there is no version script, so force-load the bridge or
++  # the library ends up exporting only the OSMesa* functions and no gl* at all.
++  link_whole : [libosmesa_st, libglapi_bridge],
++  link_with : [
++    libmesa, libgallium, libws_null, libglapi, osmesa_link_with,
++  ],
++  dependencies : [
++    dep_ws2_32, dep_thread, dep_clock, dep_unwind, driver_swrast, idep_mesautil,
++    driver_freedreno, idep_xmlconfig, dep_libdrm,
++  ],
++  name_prefix : host_machine.system() == 'windows' ? '' : [],  # otherwise mingw will create libosmesa.dll
++  soversion : host_machine.system() == 'windows' ? '' : '8',
++  version : '8.0.0',
++  darwin_versions : '9.0.0',
++  install : true,
++)
++
++if with_symbols_check
++  test('osmesa-symbols-check',
++    symbols_check,
++    args : [
++      '--lib', libosmesa,
++      '--symbols-file', files('osmesa-symbols.txt'),
++      symbols_check_args,
++    ],
++    suite : ['gallium'],
++  )
++endif
++
++pkg.generate(
++  name : 'osmesa',
++  description : 'Mesa Off-screen Rendering Library',
++  version : '8.0.0',
++  libraries : libosmesa,
++  libraries_private : gl_priv_libs,
++)
++
++if with_tests
++  test('osmesa-render',
++    executable(
++      'osmesa-render',
++      'test-render.cpp',
++      include_directories : [inc_include, inc_src, include_directories('../../../mesa/glapi'), inc_mesa, inc_gallium, inc_gallium_aux],
++      link_with: libosmesa,
++      dependencies : [idep_gtest, idep_mesautil],
++    ),
++    suite: 'gallium',
++    protocol : 'gtest',
++  )
++endif
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/osmesa-symbols.txt mesa-26.2.5/src/gallium/targets/osmesa/osmesa-symbols.txt
+--- a/src/gallium/targets/osmesa/osmesa-symbols.txt	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/osmesa-symbols.txt	2026-10-23 14:09:00
+@@ -0,0 +1,1310 @@
++OSMesaColorClamp
++OSMesaCreateContext
++OSMesaCreateContextAttribs
++OSMesaCreateContextExt
++OSMesaDestroyContext
++OSMesaGetColorBuffer
++OSMesaGetCurrentContext
++OSMesaGetDepthBuffer
++OSMesaGetIntegerv
++OSMesaGetProcAddress
++OSMesaMakeCurrent
++OSMesaPixelStore
++OSMesaPostprocess
++
++glAccum
++glActiveShaderProgram
++glActiveTexture
++glActiveTextureARB
++glAlphaFunc
++glAlphaFuncx
++glAreTexturesResident
++glArrayElement
++glArrayElementEXT
++glAttachObjectARB
++glAttachShader
++glBegin
++glBeginConditionalRender
++glBeginConditionalRenderNV
++glBeginQuery
++glBeginQueryARB
++glBeginQueryIndexed
++glBeginTransformFeedback
++glBindAttribLocation
++glBindAttribLocationARB
++glBindBuffer
++glBindBufferARB
++glBindBufferBase
++glBindBufferRange
++glBindBuffersBase
++glBindBuffersRange
++glBindFragDataLocation
++glBindFragDataLocationEXT
++glBindFragDataLocationIndexed
++glBindFramebuffer
++glBindFramebufferEXT
++glBindImageTexture
++glBindImageTextures
++glBindProgramARB
++glBindProgramPipeline
++glBindRenderbuffer
++glBindRenderbufferEXT
++glBindSampler
++glBindSamplers
++glBindTexture
++glBindTextureEXT
++glBindTextures
++glBindTransformFeedback
++glBindVertexArray
++glBindVertexBuffer
++glBindVertexBuffers
++glBitmap
++glBlendBarrier
++glBlendColor
++glBlendColorEXT
++glBlendEquation
++glBlendEquationEXT
++glBlendEquationSeparate
++glBlendEquationSeparatei
++glBlendEquationSeparateiARB
++glBlendEquationi
++glBlendEquationiARB
++glBlendFunc
++glBlendFuncSeparate
++glBlendFuncSeparateEXT
++glBlendFuncSeparatei
++glBlendFuncSeparateiARB
++glBlendFunci
++glBlendFunciARB
++glBlitFramebuffer
++glBufferData
++glBufferDataARB
++glBufferStorage
++glBufferSubData
++glBufferSubDataARB
++glCallList
++glCallLists
++glCheckFramebufferStatus
++glCheckFramebufferStatusEXT
++glClampColor
++glClampColorARB
++glClear
++glClearAccum
++glClearBufferData
++glClearBufferSubData
++glClearBufferfi
++glClearBufferfv
++glClearBufferiv
++glClearBufferuiv
++glClearColor
++glClearColorIiEXT
++glClearColorIuiEXT
++glClearColorx
++glClearDepth
++glClearDepthf
++glClearDepthx
++glClearIndex
++glClearStencil
++glClearTexImage
++glClearTexSubImage
++glClientActiveTexture
++glClientActiveTextureARB
++glClientWaitSync
++glClipPlane
++glClipPlanef
++glClipPlanex
++glColor3b
++glColor3bv
++glColor3d
++glColor3dv
++glColor3f
++glColor3fv
++glColor3i
++glColor3iv
++glColor3s
++glColor3sv
++glColor3ub
++glColor3ubv
++glColor3ui
++glColor3uiv
++glColor3us
++glColor3usv
++glColor4b
++glColor4bv
++glColor4d
++glColor4dv
++glColor4f
++glColor4fv
++glColor4i
++glColor4iv
++glColor4s
++glColor4sv
++glColor4ub
++glColor4ubv
++glColor4ui
++glColor4uiv
++glColor4us
++glColor4usv
++glColor4x
++glColorMask
++glColorMaskIndexedEXT
++glColorMaski
++glColorMaterial
++glColorP3ui
++glColorP3uiv
++glColorP4ui
++glColorP4uiv
++glColorPointer
++glColorPointerEXT
++glColorSubTable
++glColorTable
++glColorTableParameterfv
++glColorTableParameteriv
++glCompileShader
++glCompileShaderARB
++glCompressedTexImage1D
++glCompressedTexImage1DARB
++glCompressedTexImage2D
++glCompressedTexImage2DARB
++glCompressedTexImage3D
++glCompressedTexImage3DARB
++glCompressedTexSubImage1D
++glCompressedTexSubImage1DARB
++glCompressedTexSubImage2D
++glCompressedTexSubImage2DARB
++glCompressedTexSubImage3D
++glCompressedTexSubImage3DARB
++glConvolutionFilter1D
++glConvolutionFilter2D
++glConvolutionParameterf
++glConvolutionParameterfv
++glConvolutionParameteri
++glConvolutionParameteriv
++glCopyBufferSubData
++glCopyColorSubTable
++glCopyColorTable
++glCopyConvolutionFilter1D
++glCopyConvolutionFilter2D
++glCopyImageSubData
++glCopyPixels
++glCopyTexImage1D
++glCopyTexImage2D
++glCopyTexSubImage1D
++glCopyTexSubImage2D
++glCopyTexSubImage3D
++glCopyTexSubImage3DEXT
++glCreateProgram
++glCreateProgramObjectARB
++glCreateShader
++glCreateShaderObjectARB
++glCreateShaderProgramv
++glCullFace
++glDebugMessageCallback
++glDebugMessageCallbackARB
++glDebugMessageControl
++glDebugMessageControlARB
++glDebugMessageInsert
++glDebugMessageInsertARB
++glDeleteBuffers
++glDeleteBuffersARB
++glDeleteFramebuffers
++glDeleteFramebuffersEXT
++glDeleteLists
++glDeleteObjectARB
++glDeleteProgram
++glDeleteProgramPipelines
++glDeleteProgramsARB
++glDeleteQueries
++glDeleteQueriesARB
++glDeleteRenderbuffers
++glDeleteRenderbuffersEXT
++glDeleteSamplers
++glDeleteShader
++glDeleteSync
++glDeleteTextures
++glDeleteTransformFeedbacks
++glDeleteVertexArrays
++glDepthFunc
++glDepthMask
++glDepthRange
++glDepthRangeArrayv
++glDepthRangeIndexed
++glDepthRangef
++glDepthRangex
++glDetachObjectARB
++glDetachShader
++glDisable
++glDisableClientState
++glDisableIndexedEXT
++glDisableVertexAttribArray
++glDisableVertexAttribArrayARB
++glDisablei
++glDispatchCompute
++glDispatchComputeIndirect
++glDrawArrays
++glDrawArraysEXT
++glDrawArraysIndirect
++glDrawArraysInstanced
++glDrawArraysInstancedARB
++glDrawArraysInstancedBaseInstance
++glDrawArraysInstancedEXT
++glDrawBuffer
++glDrawBuffers
++glDrawBuffersARB
++glDrawBuffersATI
++glDrawElements
++glDrawElementsBaseVertex
++glDrawElementsIndirect
++glDrawElementsInstanced
++glDrawElementsInstancedARB
++glDrawElementsInstancedBaseInstance
++glDrawElementsInstancedBaseVertex
++glDrawElementsInstancedBaseVertexBaseInstance
++glDrawElementsInstancedEXT
++glDrawPixels
++glDrawRangeElements
++glDrawRangeElementsBaseVertex
++glDrawRangeElementsEXT
++glDrawTransformFeedback
++glDrawTransformFeedbackInstanced
++glDrawTransformFeedbackStream
++glDrawTransformFeedbackStreamInstanced
++glEdgeFlag
++glEdgeFlagPointer
++glEdgeFlagPointerEXT
++glEdgeFlagv
++glEnable
++glEnableClientState
++glEnableIndexedEXT
++glEnableVertexAttribArray
++glEnableVertexAttribArrayARB
++glEnablei
++glEnd
++glEndConditionalRender
++glEndConditionalRenderNV
++glEndList
++glEndQuery
++glEndQueryARB
++glEndQueryIndexed
++glEndTransformFeedback
++glEvalCoord1d
++glEvalCoord1dv
++glEvalCoord1f
++glEvalCoord1fv
++glEvalCoord2d
++glEvalCoord2dv
++glEvalCoord2f
++glEvalCoord2fv
++glEvalMesh1
++glEvalMesh2
++glEvalPoint1
++glEvalPoint2
++glFeedbackBuffer
++glFenceSync
++glFinish
++glFlush
++glFlushMappedBufferRange
++glFogCoordPointer
++glFogCoordPointerEXT
++glFogCoordd
++glFogCoorddEXT
++glFogCoorddv
++glFogCoorddvEXT
++glFogCoordf
++glFogCoordfEXT
++glFogCoordfv
++glFogCoordfvEXT
++glFogf
++glFogfv
++glFogi
++glFogiv
++glFogx
++glFogxv
++glFramebufferParameteri
++glFramebufferRenderbuffer
++glFramebufferRenderbufferEXT
++glFramebufferTexture
++glFramebufferTexture1D
++glFramebufferTexture1DEXT
++glFramebufferTexture2D
++glFramebufferTexture2DEXT
++glFramebufferTexture3D
++glFramebufferTexture3DEXT
++glFramebufferTextureLayer
++glFramebufferTextureLayerEXT
++glFramebufferTextureMultiviewOVR
++glFramebufferTextureMultisampleMultiviewOVR
++glFrontFace
++glFrustum
++glFrustumf
++glFrustumx
++glGenBuffers
++glGenBuffersARB
++glGenFramebuffers
++glGenFramebuffersEXT
++glGenLists
++glGenProgramPipelines
++glGenProgramsARB
++glGenQueries
++glGenQueriesARB
++glGenRenderbuffers
++glGenRenderbuffersEXT
++glGenSamplers
++glGenTextures
++glGenTransformFeedbacks
++glGenVertexArrays
++glGenerateMipmap
++glGenerateMipmapEXT
++glGetActiveAtomicCounterBufferiv
++glGetActiveAttrib
++glGetActiveAttribARB
++glGetActiveUniform
++glGetActiveUniformARB
++glGetActiveUniformBlockName
++glGetActiveUniformBlockiv
++glGetActiveUniformName
++glGetActiveUniformsiv
++glGetAttachedObjectsARB
++glGetAttachedShaders
++glGetAttribLocation
++glGetAttribLocationARB
++glGetBooleanIndexedvEXT
++glGetBooleani_v
++glGetBooleanv
++glGetBufferParameteri64v
++glGetBufferParameteriv
++glGetBufferParameterivARB
++glGetBufferPointerv
++glGetBufferPointervARB
++glGetBufferSubData
++glGetBufferSubDataARB
++glGetClipPlane
++glGetClipPlanef
++glGetClipPlanex
++glGetColorTable
++glGetColorTableParameterfv
++glGetColorTableParameteriv
++glGetCompressedTexImage
++glGetCompressedTexImageARB
++glGetConvolutionFilter
++glGetConvolutionParameterfv
++glGetConvolutionParameteriv
++glGetDebugMessageLog
++glGetDebugMessageLogARB
++glGetDoublei_v
++glGetDoublev
++glGetError
++glGetFixedv
++glGetFloati_v
++glGetFloatv
++glGetFragDataIndex
++glGetFragDataLocation
++glGetFragDataLocationEXT
++glGetFramebufferAttachmentParameteriv
++glGetFramebufferAttachmentParameterivEXT
++glGetFramebufferParameteriv
++glGetGraphicsResetStatus
++glGetGraphicsResetStatusARB
++glGetHandleARB
++glGetHistogram
++glGetHistogramParameterfv
++glGetHistogramParameteriv
++glGetInfoLogARB
++glGetInteger64i_v
++glGetInteger64v
++glGetIntegerIndexedvEXT
++glGetIntegeri_v
++glGetIntegerv
++glGetLightfv
++glGetLightiv
++glGetLightxv
++glGetMapdv
++glGetMapfv
++glGetMapiv
++glGetMaterialfv
++glGetMaterialiv
++glGetMaterialxv
++glGetMinmax
++glGetMinmaxParameterfv
++glGetMinmaxParameteriv
++glGetMultisamplefv
++glGetObjectLabel
++glGetObjectLabelEXT
++glGetObjectParameterfvARB
++glGetObjectParameterivARB
++glGetObjectPtrLabel
++glGetPixelMapfv
++glGetPixelMapuiv
++glGetPixelMapusv
++glGetPointerv
++glGetPointervEXT
++glGetPolygonStipple
++glGetProgramBinary
++glGetProgramEnvParameterdvARB
++glGetProgramEnvParameterfvARB
++glGetProgramInfoLog
++glGetProgramInterfaceiv
++glGetProgramLocalParameterdvARB
++glGetProgramLocalParameterfvARB
++glGetProgramPipelineInfoLog
++glGetProgramPipelineiv
++glGetProgramResourceIndex
++glGetProgramResourceLocation
++glGetProgramResourceName
++glGetProgramResourceiv
++glGetProgramStringARB
++glGetProgramiv
++glGetProgramivARB
++glGetQueryIndexediv
++glGetQueryObjectiv
++glGetQueryObjectivARB
++glGetQueryObjectuiv
++glGetQueryObjectuivARB
++glGetQueryiv
++glGetQueryivARB
++glGetRenderbufferParameteriv
++glGetRenderbufferParameterivEXT
++glGetSamplerParameterIiv
++glGetSamplerParameterIuiv
++glGetSamplerParameterfv
++glGetSamplerParameteriv
++glGetSeparableFilter
++glGetShaderInfoLog
++glGetShaderPrecisionFormat
++glGetShaderSource
++glGetShaderSourceARB
++glGetShaderiv
++glGetString
++glGetStringi
++glGetSynciv
++glGetTexEnvfv
++glGetTexEnviv
++glGetTexEnvxv
++glGetTexGendv
++glGetTexGenfv
++glGetTexGeniv
++glGetTexImage
++glGetTexLevelParameterfv
++glGetTexLevelParameteriv
++glGetTexParameterIiv
++glGetTexParameterIivEXT
++glGetTexParameterIuiv
++glGetTexParameterIuivEXT
++glGetTexParameterfv
++glGetTexParameteriv
++glGetTexParameterxv
++glGetTransformFeedbackVarying
++glGetUniformBlockIndex
++glGetUniformIndices
++glGetUniformLocation
++glGetUniformLocationARB
++glGetUniformfv
++glGetUniformfvARB
++glGetUniformiv
++glGetUniformivARB
++glGetUniformuiv
++glGetUniformuivEXT
++glGetVertexAttribIiv
++glGetVertexAttribIivEXT
++glGetVertexAttribIuiv
++glGetVertexAttribIuivEXT
++glGetVertexAttribPointerv
++glGetVertexAttribPointervARB
++glGetVertexAttribdv
++glGetVertexAttribdvARB
++glGetVertexAttribfv
++glGetVertexAttribfvARB
++glGetVertexAttribiv
++glGetVertexAttribivARB
++glGetnColorTableARB
++glGetnCompressedTexImageARB
++glGetnConvolutionFilterARB
++glGetnHistogramARB
++glGetnMapdvARB
++glGetnMapfvARB
++glGetnMapivARB
++glGetnMinmaxARB
++glGetnPixelMapfvARB
++glGetnPixelMapuivARB
++glGetnPixelMapusvARB
++glGetnPolygonStippleARB
++glGetnSeparableFilterARB
++glGetnTexImageARB
++glGetnUniformdvARB
++glGetnUniformfv
++glGetnUniformfvARB
++glGetnUniformiv
++glGetnUniformivARB
++glGetnUniformuiv
++glGetnUniformuivARB
++glHint
++glHistogram
++glIndexMask
++glIndexPointer
++glIndexPointerEXT
++glIndexd
++glIndexdv
++glIndexf
++glIndexfv
++glIndexi
++glIndexiv
++glIndexs
++glIndexsv
++glIndexub
++glIndexubv
++glInitNames
++glInterleavedArrays
++glInvalidateBufferData
++glInvalidateBufferSubData
++glInvalidateFramebuffer
++glInvalidateSubFramebuffer
++glInvalidateTexImage
++glInvalidateTexSubImage
++glIsBuffer
++glIsBufferARB
++glIsEnabled
++glIsEnabledIndexedEXT
++glIsEnabledi
++glIsFramebuffer
++glIsFramebufferEXT
++glIsList
++glIsProgram
++glIsProgramARB
++glIsProgramPipeline
++glIsQuery
++glIsQueryARB
++glIsRenderbuffer
++glIsRenderbufferEXT
++glIsSampler
++glIsShader
++glIsSync
++glIsTexture
++glIsTransformFeedback
++glIsVertexArray
++glLabelObjectEXT
++glLightModelf
++glLightModelfv
++glLightModeli
++glLightModeliv
++glLightModelx
++glLightModelxv
++glLightf
++glLightfv
++glLighti
++glLightiv
++glLightx
++glLightxv
++glLineStipple
++glLineWidth
++glLineWidthx
++glLinkProgram
++glLinkProgramARB
++glListBase
++glLoadIdentity
++glLoadMatrixd
++glLoadMatrixf
++glLoadMatrixx
++glLoadName
++glLoadTransposeMatrixd
++glLoadTransposeMatrixdARB
++glLoadTransposeMatrixf
++glLoadTransposeMatrixfARB
++glLockArraysEXT
++glLogicOp
++glMap1d
++glMap1f
++glMap2d
++glMap2f
++glMapBuffer
++glMapBufferARB
++glMapBufferRange
++glMapGrid1d
++glMapGrid1f
++glMapGrid2d
++glMapGrid2f
++glMaterialf
++glMaterialfv
++glMateriali
++glMaterialiv
++glMaterialx
++glMaterialxv
++glMatrixMode
++glMemoryBarrier
++glMemoryBarrierByRegion
++glMinSampleShading
++glMinSampleShadingARB
++glMinmax
++glMultMatrixd
++glMultMatrixf
++glMultMatrixx
++glMultTransposeMatrixd
++glMultTransposeMatrixdARB
++glMultTransposeMatrixf
++glMultTransposeMatrixfARB
++glMultiDrawArrays
++glMultiDrawArraysEXT
++glMultiDrawArraysIndirect
++glMultiDrawElements
++glMultiDrawElementsBaseVertex
++glMultiDrawElementsEXT
++glMultiDrawElementsIndirect
++glMultiTexCoord1d
++glMultiTexCoord1dARB
++glMultiTexCoord1dv
++glMultiTexCoord1dvARB
++glMultiTexCoord1f
++glMultiTexCoord1fARB
++glMultiTexCoord1fv
++glMultiTexCoord1fvARB
++glMultiTexCoord1i
++glMultiTexCoord1iARB
++glMultiTexCoord1iv
++glMultiTexCoord1ivARB
++glMultiTexCoord1s
++glMultiTexCoord1sARB
++glMultiTexCoord1sv
++glMultiTexCoord1svARB
++glMultiTexCoord2d
++glMultiTexCoord2dARB
++glMultiTexCoord2dv
++glMultiTexCoord2dvARB
++glMultiTexCoord2f
++glMultiTexCoord2fARB
++glMultiTexCoord2fv
++glMultiTexCoord2fvARB
++glMultiTexCoord2i
++glMultiTexCoord2iARB
++glMultiTexCoord2iv
++glMultiTexCoord2ivARB
++glMultiTexCoord2s
++glMultiTexCoord2sARB
++glMultiTexCoord2sv
++glMultiTexCoord2svARB
++glMultiTexCoord3d
++glMultiTexCoord3dARB
++glMultiTexCoord3dv
++glMultiTexCoord3dvARB
++glMultiTexCoord3f
++glMultiTexCoord3fARB
++glMultiTexCoord3fv
++glMultiTexCoord3fvARB
++glMultiTexCoord3i
++glMultiTexCoord3iARB
++glMultiTexCoord3iv
++glMultiTexCoord3ivARB
++glMultiTexCoord3s
++glMultiTexCoord3sARB
++glMultiTexCoord3sv
++glMultiTexCoord3svARB
++glMultiTexCoord4d
++glMultiTexCoord4dARB
++glMultiTexCoord4dv
++glMultiTexCoord4dvARB
++glMultiTexCoord4f
++glMultiTexCoord4fARB
++glMultiTexCoord4fv
++glMultiTexCoord4fvARB
++glMultiTexCoord4i
++glMultiTexCoord4iARB
++glMultiTexCoord4iv
++glMultiTexCoord4ivARB
++glMultiTexCoord4s
++glMultiTexCoord4sARB
++glMultiTexCoord4sv
++glMultiTexCoord4svARB
++glMultiTexCoord4x
++glMultiTexCoordP1ui
++glMultiTexCoordP1uiv
++glMultiTexCoordP2ui
++glMultiTexCoordP2uiv
++glMultiTexCoordP3ui
++glMultiTexCoordP3uiv
++glMultiTexCoordP4ui
++glMultiTexCoordP4uiv
++glNewList
++glNormal3b
++glNormal3bv
++glNormal3d
++glNormal3dv
++glNormal3f
++glNormal3fv
++glNormal3i
++glNormal3iv
++glNormal3s
++glNormal3sv
++glNormal3x
++glNormalP3ui
++glNormalP3uiv
++glNormalPointer
++glNormalPointerEXT
++glObjectLabel
++glObjectPtrLabel
++glOrtho
++glOrthof
++glOrthox
++glPassThrough
++glPatchParameteri
++glPauseTransformFeedback
++glPixelMapfv
++glPixelMapuiv
++glPixelMapusv
++glPixelStoref
++glPixelStorei
++glPixelTransferf
++glPixelTransferi
++glPixelZoom
++glPointParameterf
++glPointParameterfARB
++glPointParameterfEXT
++glPointParameterfv
++glPointParameterfvARB
++glPointParameterfvEXT
++glPointParameteri
++glPointParameteriv
++glPointParameterx
++glPointParameterxv
++glPointSize
++glPointSizePointerOES
++glPointSizex
++glPolygonMode
++glPolygonOffset
++glPolygonOffsetx
++glPolygonStipple
++glPopAttrib
++glPopClientAttrib
++glPopDebugGroup
++glPopMatrix
++glPopName
++glPrimitiveBoundingBox
++glPrimitiveRestartIndex
++glPrimitiveRestartIndexNV
++glPrimitiveRestartNV
++glPrioritizeTextures
++glPrioritizeTexturesEXT
++glProgramBinary
++glProgramEnvParameter4dARB
++glProgramEnvParameter4dvARB
++glProgramEnvParameter4fARB
++glProgramEnvParameter4fvARB
++glProgramLocalParameter4dARB
++glProgramLocalParameter4dvARB
++glProgramLocalParameter4fARB
++glProgramLocalParameter4fvARB
++glProgramParameteri
++glProgramStringARB
++glProgramUniform1f
++glProgramUniform1fv
++glProgramUniform1i
++glProgramUniform1iv
++glProgramUniform1ui
++glProgramUniform1uiv
++glProgramUniform2f
++glProgramUniform2fv
++glProgramUniform2i
++glProgramUniform2iv
++glProgramUniform2ui
++glProgramUniform2uiv
++glProgramUniform3f
++glProgramUniform3fv
++glProgramUniform3i
++glProgramUniform3iv
++glProgramUniform3ui
++glProgramUniform3uiv
++glProgramUniform4f
++glProgramUniform4fv
++glProgramUniform4i
++glProgramUniform4iv
++glProgramUniform4ui
++glProgramUniform4uiv
++glProgramUniformMatrix2fv
++glProgramUniformMatrix2x3fv
++glProgramUniformMatrix2x4fv
++glProgramUniformMatrix3fv
++glProgramUniformMatrix3x2fv
++glProgramUniformMatrix3x4fv
++glProgramUniformMatrix4fv
++glProgramUniformMatrix4x2fv
++glProgramUniformMatrix4x3fv
++glProvokingVertex
++glProvokingVertexEXT
++glPushAttrib
++glPushClientAttrib
++glPushDebugGroup
++glPushMatrix
++glPushName
++glRasterPos2d
++glRasterPos2dv
++glRasterPos2f
++glRasterPos2fv
++glRasterPos2i
++glRasterPos2iv
++glRasterPos2s
++glRasterPos2sv
++glRasterPos3d
++glRasterPos3dv
++glRasterPos3f
++glRasterPos3fv
++glRasterPos3i
++glRasterPos3iv
++glRasterPos3s
++glRasterPos3sv
++glRasterPos4d
++glRasterPos4dv
++glRasterPos4f
++glRasterPos4fv
++glRasterPos4i
++glRasterPos4iv
++glRasterPos4s
++glRasterPos4sv
++glReadBuffer
++glReadPixels
++glReadnPixels
++glReadnPixelsARB
++glRectd
++glRectdv
++glRectf
++glRectfv
++glRecti
++glRectiv
++glRects
++glRectsv
++glReleaseShaderCompiler
++glRenderMode
++glRenderbufferStorage
++glRenderbufferStorageEXT
++glRenderbufferStorageMultisample
++glRenderbufferStorageMultisampleEXT
++glResetHistogram
++glResetMinmax
++glResumeTransformFeedback
++glRotated
++glRotatef
++glRotatex
++glSampleCoverage
++glSampleCoverageARB
++glSampleCoveragex
++glSampleMaski
++glSamplerParameterIiv
++glSamplerParameterIuiv
++glSamplerParameterf
++glSamplerParameterfv
++glSamplerParameteri
++glSamplerParameteriv
++glScaled
++glScalef
++glScalex
++glScissor
++glScissorArrayv
++glScissorIndexed
++glScissorIndexedv
++glSecondaryColor3b
++glSecondaryColor3bEXT
++glSecondaryColor3bv
++glSecondaryColor3bvEXT
++glSecondaryColor3d
++glSecondaryColor3dEXT
++glSecondaryColor3dv
++glSecondaryColor3dvEXT
++glSecondaryColor3f
++glSecondaryColor3fEXT
++glSecondaryColor3fv
++glSecondaryColor3fvEXT
++glSecondaryColor3i
++glSecondaryColor3iEXT
++glSecondaryColor3iv
++glSecondaryColor3ivEXT
++glSecondaryColor3s
++glSecondaryColor3sEXT
++glSecondaryColor3sv
++glSecondaryColor3svEXT
++glSecondaryColor3ub
++glSecondaryColor3ubEXT
++glSecondaryColor3ubv
++glSecondaryColor3ubvEXT
++glSecondaryColor3ui
++glSecondaryColor3uiEXT
++glSecondaryColor3uiv
++glSecondaryColor3uivEXT
++glSecondaryColor3us
++glSecondaryColor3usEXT
++glSecondaryColor3usv
++glSecondaryColor3usvEXT
++glSecondaryColorP3ui
++glSecondaryColorP3uiv
++glSecondaryColorPointer
++glSecondaryColorPointerEXT
++glSelectBuffer
++glSeparableFilter2D
++glShadeModel
++glShaderBinary
++glShaderSource
++glShaderSourceARB
++glStencilFunc
++glStencilFuncSeparate
++glStencilMask
++glStencilMaskSeparate
++glStencilOp
++glStencilOpSeparate
++glTexBuffer
++glTexBufferARB
++glTexBufferRange
++glTexCoord1d
++glTexCoord1dv
++glTexCoord1f
++glTexCoord1fv
++glTexCoord1i
++glTexCoord1iv
++glTexCoord1s
++glTexCoord1sv
++glTexCoord2d
++glTexCoord2dv
++glTexCoord2f
++glTexCoord2fv
++glTexCoord2i
++glTexCoord2iv
++glTexCoord2s
++glTexCoord2sv
++glTexCoord3d
++glTexCoord3dv
++glTexCoord3f
++glTexCoord3fv
++glTexCoord3i
++glTexCoord3iv
++glTexCoord3s
++glTexCoord3sv
++glTexCoord4d
++glTexCoord4dv
++glTexCoord4f
++glTexCoord4fv
++glTexCoord4i
++glTexCoord4iv
++glTexCoord4s
++glTexCoord4sv
++glTexCoordP1ui
++glTexCoordP1uiv
++glTexCoordP2ui
++glTexCoordP2uiv
++glTexCoordP3ui
++glTexCoordP3uiv
++glTexCoordP4ui
++glTexCoordP4uiv
++glTexCoordPointer
++glTexCoordPointerEXT
++glTexEnvf
++glTexEnvfv
++glTexEnvi
++glTexEnviv
++glTexEnvx
++glTexEnvxv
++glTexGend
++glTexGendv
++glTexGenf
++glTexGenfv
++glTexGeni
++glTexGeniv
++glTexImage1D
++glTexImage2D
++glTexImage2DMultisample
++glTexImage3D
++glTexImage3DEXT
++glTexImage3DMultisample
++glTexParameterIiv
++glTexParameterIivEXT
++glTexParameterIuiv
++glTexParameterIuivEXT
++glTexParameterf
++glTexParameterfv
++glTexParameteri
++glTexParameteriv
++glTexParameterx
++glTexParameterxv
++glTexStorage1D
++glTexStorage2D
++glTexStorage2DMultisample
++glTexStorage3D
++glTexStorage3DMultisample
++glTexStorageAttribs2DEXT
++glTexStorageAttribs3DEXT
++glTexSubImage1D
++glTexSubImage2D
++glTexSubImage3D
++glTexSubImage3DEXT
++glTextureBarrierNV
++glTextureStorage1DEXT
++glTextureStorage2DEXT
++glTextureStorage3DEXT
++glTextureView
++glTransformFeedbackVaryings
++glTranslated
++glTranslatef
++glTranslatex
++glUniform1f
++glUniform1fARB
++glUniform1fv
++glUniform1fvARB
++glUniform1i
++glUniform1iARB
++glUniform1iv
++glUniform1ivARB
++glUniform1ui
++glUniform1uiEXT
++glUniform1uiv
++glUniform1uivEXT
++glUniform2f
++glUniform2fARB
++glUniform2fv
++glUniform2fvARB
++glUniform2i
++glUniform2iARB
++glUniform2iv
++glUniform2ivARB
++glUniform2ui
++glUniform2uiEXT
++glUniform2uiv
++glUniform2uivEXT
++glUniform3f
++glUniform3fARB
++glUniform3fv
++glUniform3fvARB
++glUniform3i
++glUniform3iARB
++glUniform3iv
++glUniform3ivARB
++glUniform3ui
++glUniform3uiEXT
++glUniform3uiv
++glUniform3uivEXT
++glUniform4f
++glUniform4fARB
++glUniform4fv
++glUniform4fvARB
++glUniform4i
++glUniform4iARB
++glUniform4iv
++glUniform4ivARB
++glUniform4ui
++glUniform4uiEXT
++glUniform4uiv
++glUniform4uivEXT
++glUniformBlockBinding
++glUniformMatrix2fv
++glUniformMatrix2fvARB
++glUniformMatrix2x3fv
++glUniformMatrix2x4fv
++glUniformMatrix3fv
++glUniformMatrix3fvARB
++glUniformMatrix3x2fv
++glUniformMatrix3x4fv
++glUniformMatrix4fv
++glUniformMatrix4fvARB
++glUniformMatrix4x2fv
++glUniformMatrix4x3fv
++glUnlockArraysEXT
++glUnmapBuffer
++glUnmapBufferARB
++glUseProgram
++glUseProgramObjectARB
++glUseProgramStages
++glValidateProgram
++glValidateProgramARB
++glValidateProgramPipeline
++glVertex2d
++glVertex2dv
++glVertex2f
++glVertex2fv
++glVertex2i
++glVertex2iv
++glVertex2s
++glVertex2sv
++glVertex3d
++glVertex3dv
++glVertex3f
++glVertex3fv
++glVertex3i
++glVertex3iv
++glVertex3s
++glVertex3sv
++glVertex4d
++glVertex4dv
++glVertex4f
++glVertex4fv
++glVertex4i
++glVertex4iv
++glVertex4s
++glVertex4sv
++glVertexAttrib1d
++glVertexAttrib1dARB
++glVertexAttrib1dv
++glVertexAttrib1dvARB
++glVertexAttrib1f
++glVertexAttrib1fARB
++glVertexAttrib1fv
++glVertexAttrib1fvARB
++glVertexAttrib1s
++glVertexAttrib1sARB
++glVertexAttrib1sv
++glVertexAttrib1svARB
++glVertexAttrib2d
++glVertexAttrib2dARB
++glVertexAttrib2dv
++glVertexAttrib2dvARB
++glVertexAttrib2f
++glVertexAttrib2fARB
++glVertexAttrib2fv
++glVertexAttrib2fvARB
++glVertexAttrib2s
++glVertexAttrib2sARB
++glVertexAttrib2sv
++glVertexAttrib2svARB
++glVertexAttrib3d
++glVertexAttrib3dARB
++glVertexAttrib3dv
++glVertexAttrib3dvARB
++glVertexAttrib3f
++glVertexAttrib3fARB
++glVertexAttrib3fv
++glVertexAttrib3fvARB
++glVertexAttrib3s
++glVertexAttrib3sARB
++glVertexAttrib3sv
++glVertexAttrib3svARB
++glVertexAttrib4Nbv
++glVertexAttrib4NbvARB
++glVertexAttrib4Niv
++glVertexAttrib4NivARB
++glVertexAttrib4Nsv
++glVertexAttrib4NsvARB
++glVertexAttrib4Nub
++glVertexAttrib4NubARB
++glVertexAttrib4Nubv
++glVertexAttrib4NubvARB
++glVertexAttrib4Nuiv
++glVertexAttrib4NuivARB
++glVertexAttrib4Nusv
++glVertexAttrib4NusvARB
++glVertexAttrib4bv
++glVertexAttrib4bvARB
++glVertexAttrib4d
++glVertexAttrib4dARB
++glVertexAttrib4dv
++glVertexAttrib4dvARB
++glVertexAttrib4f
++glVertexAttrib4fARB
++glVertexAttrib4fv
++glVertexAttrib4fvARB
++glVertexAttrib4iv
++glVertexAttrib4ivARB
++glVertexAttrib4s
++glVertexAttrib4sARB
++glVertexAttrib4sv
++glVertexAttrib4svARB
++glVertexAttrib4ubv
++glVertexAttrib4ubvARB
++glVertexAttrib4uiv
++glVertexAttrib4uivARB
++glVertexAttrib4usv
++glVertexAttrib4usvARB
++glVertexAttribBinding
++glVertexAttribDivisor
++glVertexAttribDivisorARB
++glVertexAttribFormat
++glVertexAttribI1i
++glVertexAttribI1iEXT
++glVertexAttribI1iv
++glVertexAttribI1ivEXT
++glVertexAttribI1ui
++glVertexAttribI1uiEXT
++glVertexAttribI1uiv
++glVertexAttribI1uivEXT
++glVertexAttribI2i
++glVertexAttribI2iEXT
++glVertexAttribI2iv
++glVertexAttribI2ivEXT
++glVertexAttribI2ui
++glVertexAttribI2uiEXT
++glVertexAttribI2uiv
++glVertexAttribI2uivEXT
++glVertexAttribI3i
++glVertexAttribI3iEXT
++glVertexAttribI3iv
++glVertexAttribI3ivEXT
++glVertexAttribI3ui
++glVertexAttribI3uiEXT
++glVertexAttribI3uiv
++glVertexAttribI3uivEXT
++glVertexAttribI4bv
++glVertexAttribI4bvEXT
++glVertexAttribI4i
++glVertexAttribI4iEXT
++glVertexAttribI4iv
++glVertexAttribI4ivEXT
++glVertexAttribI4sv
++glVertexAttribI4svEXT
++glVertexAttribI4ubv
++glVertexAttribI4ubvEXT
++glVertexAttribI4ui
++glVertexAttribI4uiEXT
++glVertexAttribI4uiv
++glVertexAttribI4uivEXT
++glVertexAttribI4usv
++glVertexAttribI4usvEXT
++glVertexAttribIFormat
++glVertexAttribIPointer
++glVertexAttribIPointerEXT
++glVertexAttribLFormat
++glVertexAttribP1ui
++glVertexAttribP1uiv
++glVertexAttribP2ui
++glVertexAttribP2uiv
++glVertexAttribP3ui
++glVertexAttribP3uiv
++glVertexAttribP4ui
++glVertexAttribP4uiv
++glVertexAttribPointer
++glVertexAttribPointerARB
++glVertexBindingDivisor
++glVertexP2ui
++glVertexP2uiv
++glVertexP3ui
++glVertexP3uiv
++glVertexP4ui
++glVertexP4uiv
++glVertexPointer
++glVertexPointerEXT
++glViewport
++glViewportArrayv
++glViewportIndexedf
++glViewportIndexedfv
++glWaitSync
++glWindowPos2d
++glWindowPos2dARB
++glWindowPos2dv
++glWindowPos2dvARB
++glWindowPos2f
++glWindowPos2fARB
++glWindowPos2fv
++glWindowPos2fvARB
++glWindowPos2i
++glWindowPos2iARB
++glWindowPos2iv
++glWindowPos2ivARB
++glWindowPos2s
++glWindowPos2sARB
++glWindowPos2sv
++glWindowPos2svARB
++glWindowPos3d
++glWindowPos3dARB
++glWindowPos3dv
++glWindowPos3dvARB
++glWindowPos3f
++glWindowPos3fARB
++glWindowPos3fv
++glWindowPos3fvARB
++glWindowPos3i
++glWindowPos3iARB
++glWindowPos3iv
++glWindowPos3ivARB
++glWindowPos3s
++glWindowPos3sARB
++glWindowPos3sv
++glWindowPos3svARB
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/osmesa.def.in mesa-26.2.5/src/gallium/targets/osmesa/osmesa.def.in
+--- a/src/gallium/targets/osmesa/osmesa.def.in	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/osmesa.def.in	2026-10-23 14:09:00
+@@ -0,0 +1,353 @@
++; Mesa OSMesa lib for Win32
++
++; stdcall calling convention have @number suffix on 32 bits architecture for gcc
++OSMesaCreateContext@8
++OSMesaCreateContextAttribs@8
++OSMesaCreateContextExt@20
++OSMesaDestroyContext@4
++OSMesaMakeCurrent@20
++OSMesaGetCurrentContext@0
++OSMesaPixelStore@8
++OSMesaGetIntegerv@8
++OSMesaGetDepthBuffer@20
++OSMesaGetColorBuffer@20
++OSMesaGetProcAddress@4
++OSMesaColorClamp@4
++OSMesaPostprocess@12
++glAccum@8
++glAlphaFunc@8
++glAreTexturesResident@12
++glArrayElement@4
++glBegin@4
++glBindTexture@8
++glBitmap@28
++glBlendFunc@8
++glCallList@4
++glCallLists@12
++glClear@4
++glClearAccum@16
++glClearColor@16
++glClearDepth@8
++glClearIndex@4
++glClearStencil@4
++glClipPlane@8
++glColor3b@12
++glColor3bv@4
++glColor3d@24
++glColor3dv@4
++glColor3f@12
++glColor3fv@4
++glColor3i@12
++glColor3iv@4
++glColor3s@12
++glColor3sv@4
++glColor3ub@12
++glColor3ubv@4
++glColor3ui@12
++glColor3uiv@4
++glColor3us@12
++glColor3usv@4
++glColor4b@16
++glColor4bv@4
++glColor4d@32
++glColor4dv@4
++glColor4f@16
++glColor4fv@4
++glColor4i@16
++glColor4iv@4
++glColor4s@16
++glColor4sv@4
++glColor4ub@16
++glColor4ubv@4
++glColor4ui@16
++glColor4uiv@4
++glColor4us@16
++glColor4usv@4
++glColorMask@16
++glColorMaterial@8
++glColorPointer@16
++glCopyPixels@20
++glCopyTexImage1D@28
++glCopyTexImage2D@32
++glCopyTexSubImage1D@24
++glCopyTexSubImage2D@32
++glCullFace@4
++;glDebugEntry@8
++glDeleteLists@8
++glDeleteTextures@8
++glDepthFunc@4
++glDepthMask@4
++glDepthRange@16
++glDisable@4
++glDisableClientState@4
++glDrawArrays@12
++glDrawBuffer@4
++glDrawElements@16
++glDrawPixels@20
++glEdgeFlag@4
++glEdgeFlagPointer@8
++glEdgeFlagv@4
++glEnable@4
++glEnableClientState@4
++glEnd@0
++glEndList@0
++glEvalCoord1d@8
++glEvalCoord1dv@4
++glEvalCoord1f@4
++glEvalCoord1fv@4
++glEvalCoord2d@16
++glEvalCoord2dv@4
++glEvalCoord2f@8
++glEvalCoord2fv@4
++glEvalMesh1@12
++glEvalMesh2@20
++glEvalPoint1@4
++glEvalPoint2@8
++glFeedbackBuffer@12
++glFinish@0
++glFlush@0
++glFogf@8
++glFogfv@8
++glFogi@8
++glFogiv@8
++glFrontFace@4
++glFrustum@48
++glGenLists@4
++glGenTextures@8
++glGetBooleanv@8
++glGetClipPlane@8
++glGetDoublev@8
++glGetError@0
++glGetFloatv@8
++glGetIntegerv@8
++glGetLightfv@12
++glGetLightiv@12
++glGetMapdv@12
++glGetMapfv@12
++glGetMapiv@12
++glGetMaterialfv@12
++glGetMaterialiv@12
++glGetPixelMapfv@8
++glGetPixelMapuiv@8
++glGetPixelMapusv@8
++glGetPointerv@8
++glGetPolygonStipple@4
++glGetString@4
++glGetTexEnvfv@12
++glGetTexEnviv@12
++glGetTexGendv@12
++glGetTexGenfv@12
++glGetTexGeniv@12
++glGetTexImage@20
++glGetTexLevelParameterfv@16
++glGetTexLevelParameteriv@16
++glGetTexParameterfv@12
++glGetTexParameteriv@12
++glHint@8
++glIndexMask@4
++glIndexPointer@12
++glIndexd@8
++glIndexdv@4
++glIndexf@4
++glIndexfv@4
++glIndexi@4
++glIndexiv@4
++glIndexs@4
++glIndexsv@4
++glIndexub@4
++glIndexubv@4
++glInitNames@0
++glInterleavedArrays@12
++glIsEnabled@4
++glIsList@4
++glIsTexture@4
++glLightModelf@8
++glLightModelfv@8
++glLightModeli@8
++glLightModeliv@8
++glLightf@12
++glLightfv@12
++glLighti@12
++glLightiv@12
++glLineStipple@8
++glLineWidth@4
++glListBase@4
++glLoadIdentity@0
++glLoadMatrixd@4
++glLoadMatrixf@4
++glLoadName@4
++glLogicOp@4
++glMap1d@32
++glMap1f@24
++glMap2d@56
++glMap2f@40
++glMapGrid1d@20
++glMapGrid1f@12
++glMapGrid2d@40
++glMapGrid2f@24
++glMaterialf@12
++glMaterialfv@12
++glMateriali@12
++glMaterialiv@12
++glMatrixMode@4
++glMultMatrixd@4
++glMultMatrixf@4
++glNewList@8
++glNormal3b@12
++glNormal3bv@4
++glNormal3d@24
++glNormal3dv@4
++glNormal3f@12
++glNormal3fv@4
++glNormal3i@12
++glNormal3iv@4
++glNormal3s@12
++glNormal3sv@4
++glNormalPointer@12
++glOrtho@48
++glPassThrough@4
++glPixelMapfv@12
++glPixelMapuiv@12
++glPixelMapusv@12
++glPixelStoref@8
++glPixelStorei@8
++glPixelTransferf@8
++glPixelTransferi@8
++glPixelZoom@8
++glPointSize@4
++glPolygonMode@8
++glPolygonOffset@8
++glPolygonStipple@4
++glPopAttrib@0
++glPopClientAttrib@0
++glPopMatrix@0
++glPopName@0
++glPrioritizeTextures@12
++glPushAttrib@4
++glPushClientAttrib@4
++glPushMatrix@0
++glPushName@4
++glRasterPos2d@16
++glRasterPos2dv@4
++glRasterPos2f@8
++glRasterPos2fv@4
++glRasterPos2i@8
++glRasterPos2iv@4
++glRasterPos2s@8
++glRasterPos2sv@4
++glRasterPos3d@24
++glRasterPos3dv@4
++glRasterPos3f@12
++glRasterPos3fv@4
++glRasterPos3i@12
++glRasterPos3iv@4
++glRasterPos3s@12
++glRasterPos3sv@4
++glRasterPos4d@32
++glRasterPos4dv@4
++glRasterPos4f@16
++glRasterPos4fv@4
++glRasterPos4i@16
++glRasterPos4iv@4
++glRasterPos4s@16
++glRasterPos4sv@4
++glReadBuffer@4
++glReadPixels@28
++glRectd@32
++glRectdv@8
++glRectf@16
++glRectfv@8
++glRecti@16
++glRectiv@8
++glRects@16
++glRectsv@8
++glRenderMode@4
++glRotated@32
++glRotatef@16
++glScaled@24
++glScalef@12
++glScissor@16
++glSelectBuffer@8
++glShadeModel@4
++glStencilFunc@12
++glStencilMask@4
++glStencilOp@12
++glTexCoord1d@8
++glTexCoord1dv@4
++glTexCoord1f@4
++glTexCoord1fv@4
++glTexCoord1i@4
++glTexCoord1iv@4
++glTexCoord1s@4
++glTexCoord1sv@4
++glTexCoord2d@16
++glTexCoord2dv@4
++glTexCoord2f@8
++glTexCoord2fv@4
++glTexCoord2i@8
++glTexCoord2iv@4
++glTexCoord2s@8
++glTexCoord2sv@4
++glTexCoord3d@24
++glTexCoord3dv@4
++glTexCoord3f@12
++glTexCoord3fv@4
++glTexCoord3i@12
++glTexCoord3iv@4
++glTexCoord3s@12
++glTexCoord3sv@4
++glTexCoord4d@32
++glTexCoord4dv@4
++glTexCoord4f@16
++glTexCoord4fv@4
++glTexCoord4i@16
++glTexCoord4iv@4
++glTexCoord4s@16
++glTexCoord4sv@4
++glTexCoordPointer@16
++glTexEnvf@12
++glTexEnvfv@12
++glTexEnvi@12
++glTexEnviv@12
++glTexGend@16
++glTexGendv@12
++glTexGenf@12
++glTexGenfv@12
++glTexGeni@12
++glTexGeniv@12
++glTexImage1D@32
++glTexImage2D@36
++glTexParameterf@12
++glTexParameterfv@12
++glTexParameteri@12
++glTexParameteriv@12
++glTexSubImage1D@28
++glTexSubImage2D@36
++glTranslated@24
++glTranslatef@12
++glVertex2d@16
++glVertex2dv@4
++glVertex2f@8
++glVertex2fv@4
++glVertex2i@8
++glVertex2iv@4
++glVertex2s@8
++glVertex2sv@4
++glVertex3d@24
++glVertex3dv@4
++glVertex3f@12
++glVertex3fv@4
++glVertex3i@12
++glVertex3iv@4
++glVertex3s@12
++glVertex3sv@4
++glVertex4d@32
++glVertex4dv@4
++glVertex4f@16
++glVertex4fv@4
++glVertex4i@16
++glVertex4iv@4
++glVertex4s@16
++glVertex4sv@4
++glVertexPointer@16
++glViewport@16
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/osmesa.sym mesa-26.2.5/src/gallium/targets/osmesa/osmesa.sym
+--- a/src/gallium/targets/osmesa/osmesa.sym	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/osmesa.sym	2026-10-23 14:09:00
+@@ -0,0 +1,19 @@
++{
++	global:
++		OSMesaColorClamp;
++		OSMesaCreateContext;
++		OSMesaCreateContextAttribs;
++		OSMesaCreateContextExt;
++		OSMesaDestroyContext;
++		OSMesaGetColorBuffer;
++		OSMesaGetCurrentContext;
++		OSMesaGetDepthBuffer;
++		OSMesaGetIntegerv;
++		OSMesaGetProcAddress;
++		OSMesaMakeCurrent;
++		OSMesaPixelStore;
++		OSMesaPostprocess;
++		gl*;
++	local:
++		*;
++};
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/osmesa_target.c mesa-26.2.5/src/gallium/targets/osmesa/osmesa_target.c
+--- a/src/gallium/targets/osmesa/osmesa_target.c	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/osmesa_target.c	2026-10-23 14:22:17
+@@ -0,0 +1,147 @@
++/*
++ * Copyright (c) 2013  Brian Paul   All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included
++ * in all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
++ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
++ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
++ * OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++
++#include "target-helpers/inline_sw_helper.h"
++#include "target-helpers/inline_debug_helper.h"
++
++#include "sw/null/null_sw_winsys.h"
++
++#include "frontend/winsys_handle.h"
++#include "pipe/p_screen.h"
++#include "pipe/p_state.h"
++
++#ifdef GALLIUM_FREEDRENO
++#include "freedreno/drm/freedreno_drm_public.h"
++#include "util/driconf.h"
++#include "util/xmlconfig.h"
++#include <xf86drm.h>
++
++static int gpu_fd = -1;
++
++static const driOptionDescription freedreno_options[] = {
++#include "freedreno/driinfo_freedreno.h"
++};
++
++/* The GPU's driver, where the kernel has a GPU to drive (Darwin on redwood); NULL: none. */
++static struct pipe_screen *
++osmesa_create_gpu_screen(void)
++{
++   static driOptionCache info, cache;
++   static struct pipe_screen_config config;
++   struct pipe_screen *screen;
++   int fd;
++
++   if (debug_get_bool_option("OSMESA_SOFTWARE", false))
++      return NULL;
++   fd = drmOpenWithType("msm", NULL, DRM_NODE_RENDER);
++   if (fd < 0)
++      return NULL;
++   driParseOptionInfo(&info, freedreno_options, ARRAY_SIZE(freedreno_options));
++   const driConfigFileParseParams params = {
++      .screenNum = 0,
++      .driverName = "msm",
++   };
++   driParseConfigFiles(&cache, &info, &params);
++   config.options = &cache;
++   config.options_info = &info;
++   screen = fd_drm_screen_create_renderonly(fd, NULL, &config);
++   if (screen)
++      gpu_fd = fd;
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++#endif
++
++
++struct pipe_resource *
++osmesa_surface_resource(struct pipe_screen *screen, uint32_t surface);
++
++/*
++ * The memory of an IOSurface as a texture, to draw into and to draw with (Darwin on redwood):
++ * the kernel's GPU driver makes a buffer of the surface. NULL: the screen is not the GPU's, or
++ * the surface is not one plane of 32-bit pixels, blue first, in rows the GPU can address.
++ */
++struct pipe_resource *
++osmesa_surface_resource(struct pipe_screen *screen, uint32_t surface)
++{
++#ifdef GALLIUM_FREEDRENO
++   struct redwood_drm_surface s = { .surface = surface };
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_B8G8R8A8_UNORM,
++      .depth0 = 1,
++      .array_size = 1,
++      .bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET,
++   };
++   struct winsys_handle handle = { .type = WINSYS_HANDLE_TYPE_FD };
++
++   if (gpu_fd < 0 || redwood_drm_surface(gpu_fd, &s) != 0)
++      return NULL;
++   if (s.pixel_format != 0x42475241 /* 'BGRA' */ || s.planes != 0)
++      return NULL;
++   /* (the surface comes in as Linux's buffers come in by file descriptor: see redwood-drm) */
++   templ.width0 = s.width;
++   templ.height0 = s.height;
++   handle.handle = surface;
++   handle.stride = s.row_bytes;
++   handle.offset = s.offset;
++   handle.size = s.size;
++   return screen->resource_from_handle(screen, &templ, &handle, 0);
++#else
++   return NULL;
++#endif
++}
++
++
++struct pipe_screen *
++osmesa_create_screen(void);
++
++
++struct pipe_screen *
++osmesa_create_screen(void)
++{
++   struct sw_winsys *winsys;
++   struct pipe_screen *screen;
++
++#ifdef GALLIUM_FREEDRENO
++   screen = osmesa_create_gpu_screen();
++   if (screen)
++      return screen;
++#endif
++
++   /* We use a null software winsys since we always just render to ordinary
++    * driver resources.
++    */
++   winsys = null_sw_create();
++   if (!winsys)
++      return NULL;
++
++   /* Create llvmpipe or softpipe screen */
++   screen = sw_screen_create(winsys);
++   if (!screen) {
++      winsys->destroy(winsys);
++      return NULL;
++   }
++
++   /* Inject optional trace, debug, etc. wrappers */
++   return debug_screen_wrap(screen);
++}
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/targets/osmesa/test-render.cpp mesa-26.2.5/src/gallium/targets/osmesa/test-render.cpp
+--- a/src/gallium/targets/osmesa/test-render.cpp	1970-01-01 08:00:00
++++ b/src/gallium/targets/osmesa/test-render.cpp	2026-10-23 14:09:00
+@@ -0,0 +1,310 @@
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <array>
++#include <memory>
++
++#include <gtest/gtest.h>
++
++#include "GL/osmesa.h"
++#include "util/macros.h"
++#include "util/u_endian.h"
++#include "util/u_math.h"
++
++typedef struct {
++   unsigned format;
++   GLenum type;
++   int bpp;
++   uint64_t expected;
++} Params;
++
++class OSMesaRenderTestFixture : public testing::TestWithParam<Params> {};
++
++std::string
++name_params(const testing::TestParamInfo<Params> params) {
++   auto p = params.param;
++   std::string first, second;
++   switch (p.format) {
++   case OSMESA_RGBA:
++      first = "rgba";
++      break;
++   case OSMESA_BGRA:
++      first = "bgra";
++      break;
++   case OSMESA_RGB:
++      first = "rgb";
++      break;
++   case OSMESA_RGB_565:
++      first = "rgb_565";
++      break;
++   case OSMESA_ARGB:
++      first = "argb";
++      break;
++   }
++
++   switch (p.type) {
++   case GL_UNSIGNED_SHORT:
++      second = "unsigned_short";
++      break;
++   case GL_UNSIGNED_BYTE:
++      second = "unsigned_byte";
++      break;
++   case GL_FLOAT:
++      second = "float";
++      break;
++   case GL_UNSIGNED_SHORT_5_6_5:
++      second = "unsigned_short_565";
++      break;
++   }
++
++   return first + "_" + second;
++};
++
++TEST_P(OSMesaRenderTestFixture, Render)
++{
++   auto p = GetParam();
++   const int w = 2, h = 2;
++   uint8_t pixels[w * h * 8] = { 0 };
++
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx{
++      OSMesaCreateContext(p.format, NULL), &OSMesaDestroyContext};
++   ASSERT_TRUE(ctx);
++
++   auto ret = OSMesaMakeCurrent(ctx.get(), &pixels, p.type, w, h);
++   ASSERT_EQ(ret, GL_TRUE);
++
++   glClearColor(0.25, 1.0, 0.5, 0.75);
++
++   uint64_t expected = p.expected;
++
++   /* All the formats other than 565 and RGB/byte are array formats, but our
++    * expected values are packed, so byte swap appropriately.
++    */
++   if (UTIL_ARCH_BIG_ENDIAN) {
++      switch (p.bpp) {
++      case 8:
++         expected = util_bswap64(expected);
++         break;
++
++      case 4:
++         expected = util_bswap32(expected);
++         break;
++
++      case 3:
++      case 2:
++         break;
++      }
++   }
++
++   glClear(GL_COLOR_BUFFER_BIT);
++   glFinish();
++
++#if 0 /* XXX */
++   for (unsigned i = 0; i < ARRAY_SIZE(pixels); i += 4) {
++      fprintf(stderr, "pixel %d: %02x %02x %02x %02x\n",
++              i / 4,
++              pixels[i + 0],
++              pixels[i + 1],
++              pixels[i + 2],
++              pixels[i + 3]);
++   }
++#endif
++
++   for (unsigned i = 0; i < w * h; i++) {
++      switch (p.bpp) {
++      case 2: {
++         uint16_t color = 0;
++         memcpy(&color, &pixels[i * p.bpp], p.bpp);
++         ASSERT_EQ(expected, color);
++         break;
++      }
++
++      case 3: {
++         uint32_t color = ((pixels[i * p.bpp + 0] << 0) |
++                           (pixels[i * p.bpp + 1] << 8) |
++                           (pixels[i * p.bpp + 2] << 16));
++         ASSERT_EQ(expected, color);
++         break;
++      }
++
++      case 4: {
++         uint32_t color = 0;
++         memcpy(&color, &pixels[i * p.bpp], p.bpp);
++         ASSERT_EQ(expected, color);
++         break;
++      }
++
++      case 8: {
++         uint64_t color = 0;
++         memcpy(&color, &pixels[i * p.bpp], p.bpp);
++         ASSERT_EQ(expected, color);
++         break;
++      }
++
++      default:
++         unreachable("bad bpp");
++      }
++   }
++}
++
++INSTANTIATE_TEST_SUITE_P(
++   OSMesaRenderTest,
++   OSMesaRenderTestFixture,
++   testing::Values(
++      Params{ OSMESA_RGBA, GL_UNSIGNED_BYTE,  4, 0xbf80ff40 },
++      Params{ OSMESA_BGRA, GL_UNSIGNED_BYTE,  4, 0xbf40ff80 },
++      Params{ OSMESA_ARGB, GL_UNSIGNED_BYTE,  4, 0x80ff40bf},
++      Params{ OSMESA_RGB,  GL_UNSIGNED_BYTE,  3, 0x80ff40 },
++      Params{ OSMESA_RGBA, GL_UNSIGNED_SHORT, 8, 0xbfff8000ffff4000ull },
++      Params{ OSMESA_RGB_565, GL_UNSIGNED_SHORT_5_6_5, 2, ((0x10 << 0) |
++                                                           (0x3f << 5) |
++                                                           (0x8 << 11)) }
++   ),
++   name_params
++);
++
++TEST(OSMesaRenderTest, depth)
++{
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx{
++      OSMesaCreateContextExt(OSMESA_RGB_565, 24, 8, 0, NULL), &OSMesaDestroyContext};
++   ASSERT_TRUE(ctx);
++
++   const int w = 3, h = 2;
++   uint8_t pixels[4096 * h * 2] = {0}; /* different cpp from our depth! */
++   auto ret = OSMesaMakeCurrent(ctx.get(), &pixels, GL_UNSIGNED_SHORT_5_6_5, w, h);
++   ASSERT_EQ(ret, GL_TRUE);
++
++   /* Expand the row length for the color buffer so we can see that it doesn't affect depth. */
++   OSMesaPixelStore(OSMESA_ROW_LENGTH, 4096);
++
++   uint32_t *depth;
++   GLint dw, dh, depth_cpp;
++   ASSERT_EQ(true, OSMesaGetDepthBuffer(ctx.get(), &dw, &dh, &depth_cpp, (void **)&depth));
++
++   ASSERT_EQ(dw, w);
++   ASSERT_EQ(dh, h);
++   ASSERT_EQ(depth_cpp, 4);
++
++   glClearDepth(1.0);
++   glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(depth[w * 0 + 0], 0x00ffffff);
++   EXPECT_EQ(depth[w * 0 + 1], 0x00ffffff);
++   EXPECT_EQ(depth[w * 1 + 0], 0x00ffffff);
++   EXPECT_EQ(depth[w * 1 + 1], 0x00ffffff);
++
++   /* Scissor to the top half and clear */
++   glEnable(GL_SCISSOR_TEST);
++   glScissor(0, 1, 2, 1);
++   glClearDepth(0.0);
++   glClear(GL_DEPTH_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(depth[w * 0 + 0], 0x00ffffff);
++   EXPECT_EQ(depth[w * 0 + 1], 0x00ffffff);
++   EXPECT_EQ(depth[w * 1 + 0], 0x00000000);
++   EXPECT_EQ(depth[w * 1 + 1], 0x00000000);
++
++   /* Y_UP didn't affect depth buffer orientation in classic osmesa. */
++   OSMesaPixelStore(OSMESA_Y_UP, false);
++   glScissor(0, 1, 1, 1);
++   glClearDepth(1.0);
++   glClear(GL_DEPTH_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(depth[w * 0 + 0], 0x00ffffff);
++   EXPECT_EQ(depth[w * 0 + 1], 0x00ffffff);
++   EXPECT_EQ(depth[w * 1 + 0], 0x00ffffff);
++   EXPECT_EQ(depth[w * 1 + 1], 0x00000000);
++}
++
++TEST(OSMesaRenderTest, depth_get_no_attachment)
++{
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx{
++      OSMesaCreateContextExt(OSMESA_RGBA, 0, 0, 0, NULL), &OSMesaDestroyContext};
++   ASSERT_TRUE(ctx);
++
++   uint32_t pixel;
++   auto ret = OSMesaMakeCurrent(ctx.get(), &pixel, GL_UNSIGNED_BYTE, 1, 1);
++   ASSERT_EQ(ret, GL_TRUE);
++
++   uint32_t *depth;
++   GLint dw = 1, dh = 1, depth_cpp = 1;
++   ASSERT_EQ(false, OSMesaGetDepthBuffer(ctx.get(), &dw, &dh, &depth_cpp, (void **)&depth));
++   ASSERT_EQ(depth, nullptr);
++   ASSERT_EQ(dw, 0);
++   ASSERT_EQ(dh, 0);
++   ASSERT_EQ(depth_cpp, 0);
++}
++
++static uint32_t be_bswap32(uint32_t x)
++{
++   if (UTIL_ARCH_BIG_ENDIAN)
++      return util_bswap32(x);
++   else
++      return x;
++}
++
++TEST(OSMesaRenderTest, separate_buffers_per_context)
++{
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx1{
++      OSMesaCreateContext(GL_RGBA, NULL), &OSMesaDestroyContext};
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx2{
++      OSMesaCreateContext(GL_RGBA, NULL), &OSMesaDestroyContext};
++   ASSERT_TRUE(ctx1);
++   ASSERT_TRUE(ctx2);
++
++   uint32_t pixel1, pixel2;
++
++   ASSERT_EQ(OSMesaMakeCurrent(ctx1.get(), &pixel1, GL_UNSIGNED_BYTE, 1, 1), GL_TRUE);
++   glClearColor(1.0, 0.0, 0.0, 0.0);
++   glClear(GL_COLOR_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(pixel1, be_bswap32(0x000000ff));
++
++   ASSERT_EQ(OSMesaMakeCurrent(ctx2.get(), &pixel2, GL_UNSIGNED_BYTE, 1, 1), GL_TRUE);
++   glClearColor(0.0, 1.0, 0.0, 0.0);
++   glClear(GL_COLOR_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(pixel1, be_bswap32(0x000000ff));
++   EXPECT_EQ(pixel2, be_bswap32(0x0000ff00));
++
++   /* Leave a dangling render to pixel2 as we switch contexts (there should be
++    */
++   glClearColor(0.0, 0.0, 1.0, 0.0);
++   glClear(GL_COLOR_BUFFER_BIT);
++
++   ASSERT_EQ(OSMesaMakeCurrent(ctx1.get(), &pixel1, GL_UNSIGNED_BYTE, 1, 1), GL_TRUE);
++   /* Draw something off screen to trigger a real flush.  We should have the
++    * same contents in pixel1 as before
++    */
++   glBegin(GL_TRIANGLES);
++   glVertex2f(-2, -2);
++   glVertex2f(-2, -2);
++   glVertex2f(-2, -2);
++   glEnd();
++   glFinish();
++   EXPECT_EQ(pixel1, be_bswap32(0x000000ff));
++   EXPECT_EQ(pixel2, be_bswap32(0x00ff0000));
++}
++
++TEST(OSMesaRenderTest, resize)
++{
++   std::unique_ptr<osmesa_context, decltype(&OSMesaDestroyContext)> ctx{
++      OSMesaCreateContext(GL_RGBA, NULL), &OSMesaDestroyContext};
++   ASSERT_TRUE(ctx);
++
++   uint32_t draw1[1], draw2[4];
++
++   ASSERT_EQ(OSMesaMakeCurrent(ctx.get(), draw1, GL_UNSIGNED_BYTE, 1, 1), GL_TRUE);
++   glClearColor(1.0, 0.0, 0.0, 0.0);
++   glClear(GL_COLOR_BUFFER_BIT);
++   glFinish();
++   EXPECT_EQ(draw1[0], be_bswap32(0x000000ff));
++
++   ASSERT_EQ(OSMesaMakeCurrent(ctx.get(), draw2, GL_UNSIGNED_BYTE, 2, 2), GL_TRUE);
++   glClearColor(0.0, 1.0, 0.0, 0.0);
++   glClear(GL_COLOR_BUFFER_BIT);
++   glFinish();
++   for (unsigned i = 0; i < ARRAY_SIZE(draw2); i++)
++      EXPECT_EQ(draw2[i], be_bswap32(0x0000ff00));
++   EXPECT_EQ(draw1[0], be_bswap32(0x000000ff));
++}
+diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/util/meson.build mesa-26.2.5/src/util/meson.build
+--- a/src/util/meson.build	2026-10-14 23:12:24
++++ b/src/util/meson.build	2026-10-23 14:20:33
+@@ -314,7 +314,9 @@
+   idep_mesautilformat,
+ ]
+ 
+-if dep_libdrm.found()
++# Darwin on redwood: the freedreno stand-in for libdrm (src/redwood-drm) has no syncobj, and
++# nothing in the gallium path asks for the DRM sync provider -- only turnip's virtio KMD does.
++if dep_libdrm.found() and host_machine.system() != 'darwin'
+   files_mesa_util += files('u_sync_provider.c', 'u_sync_provider.h')
+   deps_for_libmesa_util += dep_libdrm
+ endif

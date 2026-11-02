@@ -1,0 +1,58 @@
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc
+@@ -124,6 +124,7 @@ fd6_texture_barrier(struct pipe_context *pctx, unsigned flags)
+    add_flushes(pctx, flushes);
+ }
+ 
++template <chip CHIP>
+ static void
+ fd6_memory_barrier(struct pipe_context *pctx, unsigned flags)
+    in_dt
+@@ -155,8 +156,12 @@ fd6_memory_barrier(struct pipe_context *pctx, unsigned flags)
+       * pending for these opcodes. This may result in a few extra WAIT_FOR_ME's
+       * with these opcodes, but the alternative would add unnecessary WAIT_FOR_ME's
+       * before draw opcodes that don't need it.
++      *
++      * a8xx removes this implicit wait, so CP_WAIT_FOR_ME should be emitted
++      * without delay, which also matches proprietary driver.
+       */
+-      if (fd_context(pctx)->screen->info->props.indirect_draw_wfm_quirk) {
++      if ((CHIP >= A8XX) ||
++          fd_context(pctx)->screen->info->props.indirect_draw_wfm_quirk) {
+          flushes |= FD6_WAIT_FOR_ME;
+       }
+    }
+@@ -168,9 +173,11 @@ fd6_memory_barrier(struct pipe_context *pctx, unsigned flags)
+    add_flushes(pctx, flushes);
+ }
+ 
++template <chip CHIP>
+ void
+ fd6_barrier_init(struct pipe_context *pctx)
+ {
+    pctx->texture_barrier = fd6_texture_barrier;
+-   pctx->memory_barrier = fd6_memory_barrier;
++   pctx->memory_barrier = fd6_memory_barrier<CHIP>;
+ }
++FD_GENX(fd6_barrier_init);
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_barrier.h
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_barrier.h
+@@ -41,6 +41,7 @@ fd6_barrier_flush(fd_cs &cs, struct fd_batch *batch)
+    batch->barrier = 0;
+ }
+ 
++template <chip CHIP>
+ void fd6_barrier_init(struct pipe_context *pctx);
+ 
+ #endif /* FD6_BARRIER_H_ */
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_context.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_context.cc
+@@ -279,7 +279,7 @@ fd6_context_create(struct pipe_screen *pscreen, void *priv,
+    fd6_image_init<CHIP>(pctx);
+ 
+    /* after fd_context_init() to override memory_barrier/texture_barrier(): */
+-   fd6_barrier_init(pctx);
++   fd6_barrier_init<CHIP>(pctx);
+ 
+    util_blitter_set_texture_multisample(fd6_ctx->base.blitter, true);
+ 

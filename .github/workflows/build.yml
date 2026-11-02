@@ -27,6 +27,12 @@ jobs:
             build-essential git curl xz-utils make flex bison m4 perl \
             python3 python3-pip python3-venv autoconf automake libtool \
             pkg-config clang lld llvm nasm zip uuid-dev libncurses-dev ninja-build meson
+          # the kernel is built with clang-20: the kernels this tree produced with
+          # ubuntu-24.04's default clang-18 ran slow and wedged mid-session
+          sudo apt-get install -y --no-install-recommends clang-20 lld-20 || \
+            { curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg; \
+              echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list; \
+              sudo apt-get update -q && sudo apt-get install -y --no-install-recommends clang-20 lld-20; }
 
       - name: theos (the cctools ld64 and the iPhoneOS 16.5 SDK)
         run: |
@@ -51,6 +57,13 @@ jobs:
           rm -rf hackios/devices/dodge/.git
           cd hackios
           git apply --whitespace=nowarn devices/dodge/patches/kernel-common.patch
+          # Mesa 26.2.5 (the fd6/ir3 fixes for this GPU) with the port's own tooling:
+          # the tree's tools/mesa replaced wholesale, the shim's GPU service name
+          # matched to this port's kernel (HakiosGPU), and the build pointed at 26.2.5
+          rm -rf tools/mesa tools/mk-mesa.sh tools/mesa-stamp.sh
+          cp -r devices/dodge/mesa-files/mesa tools/mesa
+          cp devices/dodge/mesa-files/mk-mesa.sh devices/dodge/mesa-files/mesa-stamp.sh tools/
+          sed -i 's|^\t\t\t\t../tools/mk-mesa.sh$|\t\t\t\tVERSION=26.2.5 SHA256=794b3d1729075dae7ebd47c7283b7ca0cdb5dec668f7f11cc0a5d82f6138a0a5 REBASE=26 ../tools/mk-mesa.sh|' userland/build.sh
           xnu/apply.sh     # the upstream's own XNU patch and files/, as they are
           # this port's kernel work on top: core changes and the driver registrations
           # (the A830 GPU bring-up conditions, the evolved mini-iokit, the adsp SCM revert)
@@ -76,6 +89,7 @@ jobs:
         run: |
           cd hackios
           export LC_ALL=C
+          export PATH="/usr/lib/llvm-20/bin:$PATH"    # clang-20: see the install step
           make kernel JOBS=$(nproc) || true    # a trailing target after mach.* may fail
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           [ -s "$K" ] || { echo "--- the kernel was not built"; exit 1; }
