@@ -1916,15 +1916,6 @@ index 407c8df..ee233b3 100644
   */
  static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
  
-@@ -474,7 +465,7 @@ IOMobileFramebuffer::start(IOService * provider)
- 
- 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
- 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
--	setProperty("HakiosWaitsForGPU", kOSBooleanTrue);
-+	setProperty("RedwoodWaitsForGPU", kOSBooleanTrue);
- 	publishModes();
- 	setName("disp0");
- 	registerService();
 @@ -560,18 +551,6 @@ IOMobileFramebuffer::defaultSurface(void)
  	return fDefaultSurface;
  }
@@ -2858,14 +2849,14 @@ index 0000000..9c0239b
 +	IOLockUnlock(gSurfaceLock);
 +	return ret;
 +}
-diff --git a/iokit/Kernel/RedwoodBattery.cpp b/iokit/Kernel/RedwoodBattery.cpp
+diff --git a/iokit/Kernel/HakiosBattery.cpp b/iokit/Kernel/HakiosBattery.cpp
 new file mode 100644
 index 0000000..87223c2
 --- /dev/null
-+++ b/iokit/Kernel/RedwoodBattery.cpp
++++ b/iokit/Kernel/HakiosBattery.cpp
 @@ -0,0 +1,230 @@
 +/*
-+ * RedwoodBattery: the phone's battery as iOS looks for it, an IOPMPowerSource.
++ * HakiosBattery: the phone's battery as iOS looks for it, an IOPMPowerSource.
 + *
 + * powerd finds every service of the class IOPMPowerSource (it calls the first "InternalBattery-0"),
 + * listens for its kIOPMMessageBatteryStatusHasChanged and then reads its properties: whether a
@@ -2877,7 +2868,7 @@ index 0000000..87223c2
 + *
 + * What the values are comes from the audio DSP's battery manager (bsd/dev/redwood_adsp.c,
 + * with adsp=1, unless battmgr=0), by way of bsd/dev/redwood_battery.c, which calls
-+ * RedwoodBatteryReport() with every reading; the first one makes the service. Nothing here asks
++ * HakiosBatteryReport() with every reading; the first one makes the service. Nothing here asks
 + * the charger anything or tells it anything.
 + *
 + * As on Apple's newer batteries, CurrentCapacity is the percentage that the fuel gauge shows (and
@@ -2907,11 +2898,11 @@ index 0000000..87223c2
 +	int32_t usb_voltage_uv, usb_current_ua;
 +};
 +
-+extern "C" void RedwoodBatteryReport(const void * state, unsigned size);
++extern "C" void HakiosBatteryReport(const void * state, unsigned size);
 +
-+class RedwoodBattery : public IOPMPowerSource
++class HakiosBattery : public IOPMPowerSource
 +{
-+	OSDeclareDefaultStructors(RedwoodBattery);
++	OSDeclareDefaultStructors(HakiosBattery);
 +
 +public:
 +	void report(const struct redwood_battery_state * b);
@@ -2922,12 +2913,12 @@ index 0000000..87223c2
 +	void object(const char * key, OSObject * value);
 +};
 +
-+OSDefineMetaClassAndStructors(RedwoodBattery, IOPMPowerSource);
++OSDefineMetaClassAndStructors(HakiosBattery, IOPMPowerSource);
 +
-+static RedwoodBattery * battery;
++static HakiosBattery * battery;
 +
 +void
-+RedwoodBattery::number(const char * key, long long value)
++HakiosBattery::number(const char * key, long long value)
 +{
 +	const OSSymbol * symbol = OSSymbol::withCString(key);
 +	OSNumber * n = OSNumber::withNumber((unsigned long long) value, 32);
@@ -2940,7 +2931,7 @@ index 0000000..87223c2
 +}
 +
 +void
-+RedwoodBattery::flag(const char * key, bool value)
++HakiosBattery::flag(const char * key, bool value)
 +{
 +	const OSSymbol * symbol = OSSymbol::withCString(key);
 +
@@ -2951,7 +2942,7 @@ index 0000000..87223c2
 +}
 +
 +void
-+RedwoodBattery::object(const char * key, OSObject * value)
++HakiosBattery::object(const char * key, OSObject * value)
 +{
 +	const OSSymbol * symbol = OSSymbol::withCString(key);
 +
@@ -2979,7 +2970,7 @@ index 0000000..87223c2
 +}
 +
 +void
-+RedwoodBattery::report(const struct redwood_battery_state * b)
++HakiosBattery::report(const struct redwood_battery_state * b)
 +{
 +	int percent = (b->percent_hundredths + 50) / 100;
 +	bool charging = b->external && b->status == 1;          /* POWER_SUPPLY_STATUS_CHARGING */
@@ -3053,7 +3044,7 @@ index 0000000..87223c2
 +
 +/* With every reading of the battery (bsd/dev/redwood_battery.c); the first one makes the service. One caller at a time. */
 +void
-+RedwoodBatteryReport(const void * state, unsigned size)
++HakiosBatteryReport(const void * state, unsigned size)
 +{
 +	const struct redwood_battery_state * b = (const struct redwood_battery_state *) state;
 +	IOService * platform;
@@ -3063,13 +3054,13 @@ index 0000000..87223c2
 +
 +		if (!said) {
 +			said = true;
-+			IOLog("RedwoodBattery: the battery's state is %u bytes, not %lu: bsd/sys/redwood_input.h and this file disagree\n",
++			IOLog("HakiosBattery: the battery's state is %u bytes, not %lu: bsd/sys/redwood_input.h and this file disagree\n",
 +			    size, sizeof(struct redwood_battery_state));
 +		}
 +		return;
 +	}
 +	if (battery == NULL) {
-+		RedwoodBattery * made = OSTypeAlloc(RedwoodBattery);
++		HakiosBattery * made = OSTypeAlloc(HakiosBattery);
 +
 +		if ((platform = IOService::getPlatform()) == NULL || made == NULL || !made->init()) {
 +			OSSafeReleaseNULL(made);
@@ -3080,7 +3071,7 @@ index 0000000..87223c2
 +			made->release();
 +			return;
 +		}
-+		made->setName("RedwoodBattery");
++		made->setName("HakiosBattery");
 +		if (!made->start(platform)) {
 +			made->detach(platform);
 +			made->release();
@@ -3088,7 +3079,7 @@ index 0000000..87223c2
 +		}
 +		made->registerService();
 +		battery = made;
-+		IOLog("RedwoodBattery: the battery's power source is up: %d%%, %s\n", (b->percent_hundredths + 50) / 100,
++		IOLog("HakiosBattery: the battery's power source is up: %d%%, %s\n", (b->percent_hundredths + 50) / 100,
 +		    b->external ? (b->status == 1 ? "charging" : "on a charger, not charging") : "not on a charger");
 +		return;
 +	}

@@ -567,7 +567,7 @@ adreno8_step_gx_power(void)
 
 /*
  * adreno8_speed=N above 1: the GPU's speed follows its load between speed 1 and speed N of
- * adreno8_boot_speeds (1 the slowest). Called with each submission under RedwoodGPU's lock and
+ * adreno8_boot_speeds (1 the slowest). Called with each submission under HakiosGPU's lock and
  * acting at most every 100 ms, on the GPU time of the submissions retired since (TS_RETIRE):
  *  - up to N at once when that time, scaled to speed 1, is 20% of the interval or more, or within
  *    300 ms of a touch (annibale_cpufreq.c's boost);
@@ -588,7 +588,7 @@ static uint32_t adreno8_speed_now = 1, adreno8_speed_changes;
 static uint64_t adreno8_speed_ticked, adreno8_speed_busy_seen, adreno8_speed_light_since;
 static bool adreno8_speed_hot;
 
-/* For RedwoodGPU's statistics: the speed voted last (the step 15 vote until a change) and the changes since. */
+/* For HakiosGPU's statistics: the speed voted last (the step 15 vote until a change) and the changes since. */
 void
 adreno8_speed_state(uint32_t *mhz, uint32_t *changes)
 {

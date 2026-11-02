@@ -5,7 +5,7 @@
  *
  * Boot-arg gpu=1, on the phone and with the GPU's firmware in the small image: the GPU is
  * started while the system starts and kept for the window server to draw with (the service
- * RedwoodGPU; "the GPU kept on" below). Should a step fail, one line says which, and the system
+ * HakiosGPU; "the GPU kept on" below). Should a step fail, one line says which, and the system
  * draws in software as it does without the boot-arg.
  *
  * The steps are how this was found out, and they stay for looking: how much of the GPU a kernel
@@ -67,7 +67,7 @@
  *                      that note is all there is.
  *   adreno_fine=1      the newest step waits like that before every single access
  *   adreno_keep=1      with adreno=21: the GPU is not stopped again but kept for the system to draw
- *                      with, through the service RedwoodGPU (see "the GPU kept on" below); it is
+ *                      with, through the service HakiosGPU (see "the GPU kept on" below); it is
  *                      given back when the run ends (adreno_dirty=1: left as a panic leaves it)
  *   adreno_speed=N     step 17 asks the GMU for the 3D core's Nth speed: 1 315 MHz, 2 450 MHz,
  *                      3 550 MHz (the default: the most this phone's GPU is rated for)
@@ -3478,7 +3478,7 @@ redwood_adreno_init(void)
 			PE_parse_boot_argn("gpu_va", &gpu_va, sizeof(gpu_va));
 			gpu_kept = true;
 			quiet = true;
-			printf("adreno: THE GPU STAYS ON for the system to draw with: the service RedwoodGPU\n");
+			printf("adreno: THE GPU STAYS ON for the system to draw with: the service HakiosGPU\n");
 			if (gpu_va != 0) {
 				printf("adreno: the 3D core's addresses: %#llx..%#llx are the kernel's to give, "
 				    "%llu KB a time%s (gpu_va=%u)\n", GPU_ADDRESSES_START,
@@ -3486,7 +3486,7 @@ redwood_adreno_init(void)
 				    gpu_va >= 2 ? ", with that much again left unmapped after every buffer" : "",
 				    gpu_va);
 			}
-			if (!RedwoodGPUStart()) legacy_gpu_stop();
+			if (!HakiosGPUStart()) legacy_gpu_stop();
 			return;
 		}
 		if (!by_itself) {

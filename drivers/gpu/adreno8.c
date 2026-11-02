@@ -26,7 +26,7 @@
  *  20  GPU scratch write/read verification
  *  21  Fault, queue, power and counter diagnostics
  *  22  Standard HWSCHED context: two non-privileged IBs, timestamps and unregister
- *  23  Enable external BO mappings and publish the RedwoodGPU service
+ *  23  Enable external BO mappings and publish the HakiosGPU service
  *
  * adreno8=N           execute steps 1..N
  * adreno8_only=K      execute only step K; its prerequisites must already exist in this kernel

@@ -1,5 +1,5 @@
 /*
- * RedwoodGPU: the phone's Adreno for programs to draw with.
+ * HakiosGPU: the phone's Adreno for programs to draw with.
  *
  * bsd/dev/redwood_adreno.c wakes the GPU and, with boot-arg adreno_keep=1, keeps it on and
  * starts this service. A program that opens it speaks the interface of Linux's msm DRM driver,
@@ -74,8 +74,8 @@ void redwood_gpu_report(const char * why);
 bool redwood_gpu_recover(void);
 void redwood_gpu_stop(void);
 
-bool RedwoodGPUStart(void);
-void RedwoodGPUStop(void);
+bool HakiosGPUStart(void);
+void HakiosGPUStop(void);
 void MiniIOMobileFramebufferShow(const uint8_t * pixels, uint32_t width, uint32_t height, uint32_t rowBytes);
 }
 
@@ -94,7 +94,7 @@ enum {
 	kMsmSubmitQueueNew      = 0x4a,
 	kMsmSubmitQueueClose    = 0x4b,
 	kMsmSubmitQueueQuery    = 0x4c,
-	kRedwoodGPUWorked       = 0x7d,         /* ours: how long the 3D core itself has worked, and on how many */
+	kHakiosGPUWorked       = 0x7d,         /* ours: how long the 3D core itself has worked, and on how many */
 	kRedwoodSurface         = 0x7e,         /* ours: an IOSurface's memory as a buffer */
 	kRedwoodShow            = 0x7f,         /* ours: pixels of the caller's onto the panel, to see a test's result */
 };
@@ -166,7 +166,7 @@ struct redwood_show {
 	uint32_t width, height, rowBytes, pad;
 };
 /*
- * kRedwoodGPUWorked: the GPU's own side of a measurement a program makes with its own clock.
+ * kHakiosGPUWorked: the GPU's own side of a measurement a program makes with its own clock.
  *
  * A program timing this driver (userland/src/metal_drv_test.m --time) can measure only wall
  * time: the whole of a draw, which is its own work, this ioctl, the submission, the core's
@@ -335,58 +335,58 @@ waitOver(const struct msm_timespec * when, uint32_t fence)
 	if (told < 4) {
 		told++;
 		absolutetime_to_nanoseconds(mach_continuous_time(), &now);
-		IOLog("RedwoodGPU: a wait for submission %u, which is not done, until %lld.%09lld s, asked for at %llu.%09llu s: "
+		IOLog("HakiosGPU: a wait for submission %u, which is not done, until %lld.%09lld s, asked for at %llu.%09llu s: "
 		    "over before it began\n", fence, when->seconds, when->nanoseconds, now / NSEC_PER_SEC, now % NSEC_PER_SEC);
 	}
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-class RedwoodGPU : public IOService
+class HakiosGPU : public IOService
 {
-	OSDeclareDefaultStructors(RedwoodGPU);
+	OSDeclareDefaultStructors(HakiosGPU);
 
 public:
 	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
 };
 
-OSDefineMetaClassAndStructors(RedwoodGPU, IOService);
+OSDefineMetaClassAndStructors(HakiosGPU, IOService);
 
 bool
-RedwoodGPU::start(IOService * provider)
+HakiosGPU::start(IOService * provider)
 {
 	if (!IOService::start(provider)) {
 		return false;
 	}
-	if (!setProperty(kIOUserClientClassKey, "RedwoodGPUUserClient")) return false;
-	setName("RedwoodGPU");
+	if (!setProperty(kIOUserClientClassKey, "HakiosGPUUserClient")) return false;
+	setName("HakiosGPU");
 	registerService(kIOServiceSynchronous);
 	return (getState() & (kIOServiceRegisteredState | kIOServiceInactiveState)) == kIOServiceRegisteredState;
 }
 
-static RedwoodGPU * gGPUService;
+static HakiosGPU * gGPUService;
 
 bool
-RedwoodGPUStart(void)
+HakiosGPUStart(void)
 {
 	if (gGPUService != NULL) {
 		return (gGPUService->getState() & (kIOServiceRegisteredState | kIOServiceInactiveState)) == kIOServiceRegisteredState;
 	}
 	IOService * provider = IOService::getPlatform();
-	RedwoodGPU * gpu = NULL;
+	HakiosGPU * gpu = NULL;
 	uint32_t cached = 0;
 
 	if (provider == NULL || (gGPULock = IOLockAlloc()) == NULL) {
-		IOLog("RedwoodGPU: cannot allocate the service lock or find its provider\n");
+		IOLog("HakiosGPU: cannot allocate the service lock or find its provider\n");
 		return false;
 	}
 	gGPUCached = PE_parse_boot_argn("gpu_cached", &cached, sizeof(cached)) && cached != 0;
-	gpu = OSTypeAlloc(RedwoodGPU);
+	gpu = OSTypeAlloc(HakiosGPU);
 	if (gpu == NULL || !gpu->init() || !gpu->attach(provider)) {
 		OSSafeReleaseNULL(gpu);
 		IOLockFree(gGPULock);
 		gGPULock = NULL;
-		IOLog("RedwoodGPU: cannot create the service\n");
+		IOLog("HakiosGPU: cannot create the service\n");
 		return false;
 	}
 	if (!gpu->start(provider)) {
@@ -394,7 +394,7 @@ RedwoodGPUStart(void)
 		gpu->release();
 		IOLockFree(gGPULock);
 		gGPULock = NULL;
-		IOLog("RedwoodGPU: the service did not register\n");
+		IOLog("HakiosGPU: the service did not register\n");
 		return false;
 	}
 	gGPUService = gpu; /* Keep the actual registered service for repeated start checks. */
@@ -403,7 +403,7 @@ RedwoodGPUStart(void)
 
 /* The run is ending (redwood_adreno.c): nobody is in the middle of anything when the GPU goes. */
 void
-RedwoodGPUStop(void)
+HakiosGPUStop(void)
 {
 	if (gGPULock == NULL) return;
 	IOLockLock(gGPULock);
@@ -465,9 +465,9 @@ struct gpu_kept {
 #define GPU_KEEP_FROM           (256u << 10)    /* bytes: smaller ones are not worth it */
 static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
 
-class RedwoodGPUUserClient : public IOUserClient
+class HakiosGPUUserClient : public IOUserClient
 {
-	OSDeclareDefaultStructors(RedwoodGPUUserClient);
+	OSDeclareDefaultStructors(HakiosGPUUserClient);
 
 	task_t                  fTask;
 	struct gpu_buffer *     fBuffers;               /* handle n is fBuffers[n - 1] */
@@ -504,10 +504,10 @@ public:
 	    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference) APPLE_KEXT_OVERRIDE;
 };
 
-OSDefineMetaClassAndStructors(RedwoodGPUUserClient, IOUserClient);
+OSDefineMetaClassAndStructors(HakiosGPUUserClient, IOUserClient);
 
 bool
-RedwoodGPUUserClient::initWithTask(task_t owningTask, void * securityID, UInt32 type, OSDictionary * properties)
+HakiosGPUUserClient::initWithTask(task_t owningTask, void * securityID, UInt32 type, OSDictionary * properties)
 {
 	if (!IOUserClient::initWithTask(owningTask, securityID, type, properties)) {
 		return false;
@@ -517,7 +517,7 @@ RedwoodGPUUserClient::initWithTask(task_t owningTask, void * securityID, UInt32 
 }
 
 bool
-RedwoodGPUUserClient::start(IOService * provider)
+HakiosGPUUserClient::start(IOService * provider)
 {
 	if (gGPULock == NULL) return false;
 	IOLockLock(gGPULock);
@@ -533,7 +533,7 @@ RedwoodGPUUserClient::start(IOService * provider)
 #include "RedwoodGPUMemory.inc"
 
 IOReturn
-RedwoodGPUUserClient::gemInfo(struct msm_gem_info * request)
+HakiosGPUUserClient::gemInfo(struct msm_gem_info * request)
 {
 	struct gpu_buffer * b;
 	IOReturn ret = kIOReturnSuccess;
@@ -563,7 +563,7 @@ RedwoodGPUUserClient::gemInfo(struct msm_gem_info * request)
 		 */
 		if (!gGPUSaidSetIova) {
 			gGPUSaidSetIova = true;
-			IOLog("RedwoodGPU: a program asked to place buffer %u at %#llx itself: refused. There is one "
+			IOLog("HakiosGPU: a program asked to place buffer %u at %#llx itself: refused. There is one "
 			    "page table here for every client, so addresses are the kernel's to give and "
 			    "MSM_INFO_GET_IOVA is how to learn them\n", request->handle, request->value);
 		}
@@ -581,7 +581,7 @@ RedwoodGPUUserClient::gemInfo(struct msm_gem_info * request)
 
 /* Pixels of the caller's (32 bits each, blue first) copied to the panel: for a test to show what it has drawn. */
 IOReturn
-RedwoodGPUUserClient::show(const struct redwood_show * request)
+HakiosGPUUserClient::show(const struct redwood_show * request)
 {
 	uint64_t size = (uint64_t) request->rowBytes * request->height;
 	uint8_t * pixels;
@@ -605,7 +605,7 @@ RedwoodGPUUserClient::show(const struct redwood_show * request)
 }
 
 IOReturn
-RedwoodGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, IOMemoryDescriptor ** memory)
+HakiosGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, IOMemoryDescriptor ** memory)
 {
 	struct gpu_buffer * b;
 	IOReturn ret = kIOReturnBadArgument;
@@ -624,7 +624,7 @@ RedwoodGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, I
 }
 
 IOReturn
-RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
+HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
     IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
 {
 	union {
@@ -739,7 +739,7 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 		}
 		IOLockUnlock(gGPULock);
 		break;
-	case kRedwoodGPUWorked:
+	case kHakiosGPUWorked:
 		if (redwood_platform_is_annibale()) {
 			ret = kIOReturnUnsupported;
 			break;
@@ -764,7 +764,7 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 		ret = show(&r.show);
 		break;
 	default:
-		IOLog("RedwoodGPU: request %#x (%zu bytes) is not known here\n", selector, size);
+		IOLog("HakiosGPU: request %#x (%zu bytes) is not known here\n", selector, size);
 		ret = kIOReturnUnsupported;
 		break;
 	}

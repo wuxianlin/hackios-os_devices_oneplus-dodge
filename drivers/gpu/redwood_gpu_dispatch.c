@@ -1,4 +1,4 @@
-/* Existing RedwoodGPU C ABI, selected by the immutable loader platform description. */
+/* Existing HakiosGPU C ABI, selected by the immutable loader platform description. */
 #include "adreno8_private.h"
 #include "adreno8_bo_private.h"
 #include "adreno8_context_private.h"
@@ -15,28 +15,28 @@ redwood_platform_is_annibale(void)
 }
 
 
-extern bool RedwoodGPUStart(void);
+extern bool HakiosGPUStart(void);
 extern uint32_t gpu_va;
 
 bool
 adreno8_step_service(void)
 {
 	if (!redwood_platform_is_annibale() || !adreno8_gpu8_keep || adreno8_gpu8_return) {
-		adreno8_say("adreno8: RedwoodGPU requires the annibale platform, keep=1 and return=0\n");
+		adreno8_say("adreno8: HakiosGPU requires the annibale platform, keep=1 and return=0\n");
 		return false;
 	}
 	if (!adreno8_bo_enable()) {
-		adreno8_say("adreno8: RedwoodGPU external BO enable was refused\n");
+		adreno8_say("adreno8: HakiosGPU external BO enable was refused\n");
 		return false;
 	}
 	gpu_va = 0; /* The shared address space has no per-client placement or BO-count query. */
 	PE_parse_boot_argn("gpu_log", &gpu_log, sizeof(gpu_log));
-	if (!RedwoodGPUStart()) {
-		adreno8_say("adreno8: RedwoodGPU service registration failed\n");
+	if (!HakiosGPUStart()) {
+		adreno8_say("adreno8: HakiosGPU service registration failed\n");
 		adreno8_bo_stop();
 		return false;
 	}
-	adreno8_say("adreno8: RedwoodGPU registered with A830 BOs and standard HWSCHED submission\n");
+	adreno8_say("adreno8: HakiosGPU registered with A830 BOs and standard HWSCHED submission\n");
 	return true;
 }
 
@@ -177,7 +177,7 @@ redwood_gpu_report(const char *why)
 		return;
 	}
 	/* Both callers report failed execution: a completion timeout or a zero submit fence. */
-	adreno8_say("adreno8: RedwoodGPU %s; last timestamp %u; SMMU fault %u\n",
+	adreno8_say("adreno8: HakiosGPU %s; last timestamp %u; SMMU fault %u\n",
 	    why, adreno8_context_last(), adreno8_gpu_faulted());
 	adreno8_bo_stop();
 }

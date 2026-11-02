@@ -13,7 +13,7 @@ gpuReleaseMapping(uint64_t address, uint64_t size)
 
 /* With the lock held. A pending buffer moves to fLeft; failed unmap retains its existing record. */
 void
-RedwoodGPUUserClient::freeBuffer(struct gpu_buffer * b)
+HakiosGPUUserClient::freeBuffer(struct gpu_buffer * b)
 {
 	bool busy = gGPUReported || !redwood_gpu_ready() || (b->fence != 0 && !redwood_gpu_done(b->fence));
 
@@ -34,7 +34,7 @@ RedwoodGPUUserClient::freeBuffer(struct gpu_buffer * b)
 			b->memory = NULL;
 		} else if (busy || !gpuReleaseMapping(b->address, b->size)) {
 			gGPUReported = true;
-			IOLog("RedwoodGPU: retaining %llu bytes until reset after unconfirmed completion or unmap\n", b->size);
+			IOLog("HakiosGPU: retaining %llu bytes until reset after unconfirmed completion or unmap\n", b->size);
 			return;
 		}
 		if (b->memory != NULL) {
@@ -52,7 +52,7 @@ RedwoodGPUUserClient::freeBuffer(struct gpu_buffer * b)
 
 /* The buffers that were given back early and that the GPU is done with now: freed. With the lock held. */
 void
-RedwoodGPUUserClient::reap(void)
+HakiosGPUUserClient::reap(void)
 {
 	for (uint32_t i = 0; i < fLeftCount;) {
 		struct gpu_left * left = &fLeft[i];
@@ -78,7 +78,7 @@ RedwoodGPUUserClient::reap(void)
 }
 
 IOReturn
-RedwoodGPUUserClient::clientClose(void)
+HakiosGPUUserClient::clientClose(void)
 {
 	if (fBuffers != NULL) {
 		IOLockLock(gGPULock);
@@ -96,7 +96,7 @@ RedwoodGPUUserClient::clientClose(void)
 			dropKept(&fKept[i]);
 		}
 		if (fLeftCount != 0) {
-			IOLog("RedwoodGPU: the GPU is not done with %u buffers of a program that is gone: they stay its own\n", fLeftCount);
+			IOLog("HakiosGPU: the GPU is not done with %u buffers of a program that is gone: they stay its own\n", fLeftCount);
 		}
 		IOLockUnlock(gGPULock);
 	}
@@ -107,7 +107,7 @@ RedwoodGPUUserClient::clientClose(void)
 }
 
 void
-RedwoodGPUUserClient::free(void)
+HakiosGPUUserClient::free(void)
 {
 	if (fBuffers != NULL) {
 		IODelete(fBuffers, struct gpu_buffer, GPU_BUFFERS);
@@ -117,12 +117,12 @@ RedwoodGPUUserClient::free(void)
 }
 
 struct gpu_buffer *
-RedwoodGPUUserClient::buffer(uint32_t handle)
+HakiosGPUUserClient::buffer(uint32_t handle)
 {
 	if (handle == 0 || handle > GPU_BUFFERS || fBuffers[handle - 1].memory == NULL) {
 		/* (a program that names a buffer it has given back draws into somebody else's next: worth knowing) */
 		if (handle != 0 && fStrangers++ < 16) {
-			IOLog("RedwoodGPU: buffer %u is asked for and is not there\n", handle);
+			IOLog("HakiosGPU: buffer %u is asked for and is not there\n", handle);
 		}
 		return NULL;
 	}
@@ -134,7 +134,7 @@ RedwoodGPUUserClient::buffer(uint32_t handle)
  * of it on (wired memory; both in whole pages). With the lock held; NULL: allocation or mapping failed.
  */
 struct gpu_buffer *
-RedwoodGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t flags, uint32_t * handle)
+HakiosGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t flags, uint32_t * handle)
 {
 	struct gpu_buffer * b = NULL;
 	bool mapped = true;
@@ -154,7 +154,7 @@ RedwoodGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint
 		}
 	}
 	if (b == NULL || (b->address = redwood_gpu_address(size)) == 0) {
-		IOLog("RedwoodGPU: no %s left for a buffer of %llu bytes\n", b ? "addresses" : "handles", size);
+		IOLog("HakiosGPU: no %s left for a buffer of %llu bytes\n", b ? "addresses" : "handles", size);
 		return NULL;
 	}
 	/* one entry for each 4 KB, one lookup for each physically contiguous run of them */
@@ -181,7 +181,7 @@ RedwoodGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint
 			fBufferCount++;
 			fBufferBytes += size;
 		}
-		IOLog("RedwoodGPU: a buffer of %llu bytes cannot be entered into the GPU's address space\n", size);
+		IOLog("HakiosGPU: a buffer of %llu bytes cannot be entered into the GPU's address space\n", size);
 		return NULL;
 	}
 	b->size = size;
@@ -198,7 +198,7 @@ RedwoodGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint
 
 /* With the lock held. */
 bool
-RedwoodGPUUserClient::dropKept(struct gpu_kept * k)
+HakiosGPUUserClient::dropKept(struct gpu_kept * k)
 {
 	if (k->memory == NULL) {
 		return true;
@@ -214,7 +214,7 @@ RedwoodGPUUserClient::dropKept(struct gpu_kept * k)
 
 /* With the lock held, the GPU done with the buffer: kept if it is worth it (those kept longest make way). */
 bool
-RedwoodGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_t address, uint64_t size, uint32_t flags)
+HakiosGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_t address, uint64_t size, uint32_t flags)
 {
 	struct gpu_kept * place = NULL;
 
@@ -251,7 +251,7 @@ RedwoodGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64
 }
 
 IOReturn
-RedwoodGPUUserClient::gemNew(struct msm_gem_new * request)
+HakiosGPUUserClient::gemNew(struct msm_gem_new * request)
 {
 	uint64_t size = round_page_64(request->size), began = mach_absolute_time();
 	struct gpu_buffer * b;
@@ -312,7 +312,7 @@ RedwoodGPUUserClient::gemNew(struct msm_gem_new * request)
 	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared |
 	    (gGPUCached ? 0 : kIOMapWriteCombineCache), (vm_size_t) size, PAGE_SIZE);
 	if (memory == NULL) {
-		IOLog("RedwoodGPU: no memory for a buffer of %llu bytes (%u buffers, %llu MB with this client)\n", size, fBufferCount,
+		IOLog("HakiosGPU: no memory for a buffer of %llu bytes (%u buffers, %llu MB with this client)\n", size, fBufferCount,
 		    fBufferBytes >> 20);
 		return kIOReturnNoMemory;
 	}
@@ -348,7 +348,7 @@ RedwoodGPUUserClient::gemNew(struct msm_gem_new * request)
  * lock it gives buffers back under). Asked only to describe (kRedwoodDescribe), no buffer is made.
  */
 IOReturn
-RedwoodGPUUserClient::surfaceBuffer(struct redwood_surface * request)
+HakiosGPUUserClient::surfaceBuffer(struct redwood_surface * request)
 {
 	MiniIOSurface * s = MiniIOSurfaceCopy(request->surface);
 	struct gpu_buffer * b = NULL;

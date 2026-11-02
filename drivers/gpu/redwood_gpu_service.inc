@@ -4,7 +4,7 @@
 
 /*
  * With boot-arg adreno_keep=1 the steps are not undone: the GPU block stays as step 21 leaves it,
- * the 3D core powered and taking commands, and the service RedwoodGPU (iokit/Kernel/RedwoodGPU.cpp)
+ * the 3D core powered and taking commands, and the service HakiosGPU (iokit/Kernel/HakiosGPU.cpp)
  * hands it to programs through the interface of Linux's msm driver, which is what Mesa's
  * freedreno speaks. That file keeps the buffers and the clients; what is the GPU's is here:
  * addresses in the 3D core's SMMU context, the ring, and the word by which the core says how
@@ -125,8 +125,8 @@ gpu_address_span(uint64_t size)
 	return gpu_va >= 2 ? span + GPU_ADDRESS_GRANULE : span;
 }
 
-extern bool RedwoodGPUStart(void);
-extern void RedwoodGPUStop(void);       /* takes the clients' lock, then calls redwood_gpu_stop() */
+extern bool HakiosGPUStart(void);
+extern void HakiosGPUStop(void);       /* takes the clients' lock, then calls redwood_gpu_stop() */
 static void gpu_block_stop(void);
 
 /*
@@ -166,13 +166,13 @@ void
 redwood_adreno_stop(void)
 {
 	if (redwood_platform_is_annibale()) {
-		RedwoodGPUStop();
+		HakiosGPUStop();
 		return;
 	}
 	uint32_t dirty = 0;
 
 	if (gpu_kept && !(PE_parse_boot_argn("adreno_dirty", &dirty, sizeof(dirty)) && dirty)) {
-		RedwoodGPUStop();
+		HakiosGPUStop();
 	}
 }
 
@@ -412,7 +412,7 @@ gpu_times(void)
 			unsigned by = 0;
 
 			if (gpu_log) {
-				/* "tl: q FENCE took US": what the core spent on that submission (iokit/Kernel/RedwoodGPU.cpp: tl: Q) */
+				/* "tl: q FENCE took US": what the core spent on that submission (iokit/Kernel/HakiosGPU.cpp: tl: Q) */
 				redwood_tl("tl: q %u took %llu\n", gpu_timed, ticks * 10 / 192);
 			}
 
@@ -517,7 +517,7 @@ legacy_gpu_report(const char *why)
  * Returns whether that worked; without the boot-arg, false at once and nothing is touched.
  *
  * Why it is worth doing: one submission the core never finishes otherwise costs the rest of the
- * run. gpuWait() (iokit/Kernel/RedwoodGPU.cpp) stops waiting for good after the first such
+ * run. gpuWait() (iokit/Kernel/HakiosGPU.cpp) stops waiting for good after the first such
  * submission, and from then on every wait says at once that the GPU is not done -- so every
  * later submission "succeeds" and writes nothing, which reads like a measurement and is not
  * one. With this, a core that hangs costs one submission.

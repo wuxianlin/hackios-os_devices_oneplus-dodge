@@ -1,6 +1,6 @@
 /* Submission validation precedes cache maintenance and backend publication. */
 IOReturn
-RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
+HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 {
 	struct msm_gem_submit_bo * bos = NULL;
 	struct msm_gem_submit_cmd * cmds = NULL;
@@ -16,7 +16,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		return kIOReturnBadArgument;
 	}
 	if (request->nr_cmds == 0 || request->nr_cmds > (a830 ? GPU_A830_SUBMIT_CMDS : GPU_SUBMIT_CMDS) || request->nr_bos == 0 || request->nr_bos > GPU_SUBMIT_BOS) {
-		IOLog("RedwoodGPU: a submission of %u command buffers in %u buffers: not taken\n", request->nr_cmds, request->nr_bos);
+		IOLog("HakiosGPU: a submission of %u command buffers in %u buffers: not taken\n", request->nr_cmds, request->nr_bos);
 		return kIOReturnBadArgument;
 	}
 	bos = IONew(struct msm_gem_submit_bo, request->nr_bos);
@@ -61,7 +61,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		    (uint64_t) cmds[i].submit_offset + cmds[i].size > b->size ||
 		    (a830 && (cmds[i].size == 0 || cmds[i].size / 4 > 0xfffff || b->address >= (1ull << 32) ||
 		    address >= (1ull << 32) || cmds[i].size > (1ull << 32) - address))) {
-			IOLog("RedwoodGPU: command buffer %u of a submission: buffer %u, offset %u, %u bytes, %u relocations: not taken\n",
+			IOLog("HakiosGPU: command buffer %u of a submission: buffer %u, offset %u, %u bytes, %u relocations: not taken\n",
 			    i, cmds[i].submit_idx, cmds[i].submit_offset, cmds[i].size, cmds[i].nr_relocs);
 			IOLockUnlock(gGPULock);
 			goto out;
@@ -170,7 +170,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 	}
 	reap();
 	if (fSubmits++ < 4) {
-		IOLog("RedwoodGPU: submission %u: %u command buffers, the first at %#llx, %u words\n", request->fence, count,
+		IOLog("HakiosGPU: submission %u: %u command buffers, the first at %#llx, %u words\n", request->fence, count,
 		    addresses[0], words[0]);
 	}
 	/* every five seconds in which something was submitted: how much, and what it cost here */
@@ -196,7 +196,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		absolutetime_to_nanoseconds(gGPUStat.making, &making);
 		absolutetime_to_nanoseconds(gGPUStat.allocating, &allocating);
 		absolutetime_to_nanoseconds(gGPUStat.locking, &locking);
-		IOLog("RedwoodGPU: buffers: %u made in %llu us each (%llu getting the memory, %llu waiting for the GPU lock; %u under "
+		IOLog("HakiosGPU: buffers: %u made in %llu us each (%llu getting the memory, %llu waiting for the GPU lock; %u under "
 		    "64 KB, %u under 1 MB, %u under 8 MB, %u larger), %u kept ones given again (%llu MB kept)\n",
 		    gGPUStat.made, gGPUStat.made ? making / NSEC_PER_USEC / gGPUStat.made : 0,
 		    gGPUStat.made ? allocating / NSEC_PER_USEC / gGPUStat.made : 0,
@@ -204,15 +204,15 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		    gGPUStat.made_by_size[2], gGPUStat.made_by_size[3], gGPUStat.given_again, fKeptBytes >> 20);
 		/* Three messages, one record each: what a window's submissions cost here, what the GPU did
 		 * with them, and what they named. */
-		IOLog("RedwoodGPU: %u submissions in %llu ms: %llu us each in the kernel, %llu of them waiting for room in the queue; "
+		IOLog("HakiosGPU: %u submissions in %llu ms: %llu us each in the kernel, %llu of them waiting for room in the queue; "
 		    "%u command buffers and %u buffers named, %llu KB out of the cache in %llu us a submission\n",
 		    gGPUStat.submissions, nanos / NSEC_PER_MSEC, submitting / NSEC_PER_USEC / gGPUStat.submissions,
 		    rooming / NSEC_PER_USEC / gGPUStat.submissions, gGPUStat.commands, gGPUStat.buffers,
 		    (gGPUStat.flushed >> 10) / gGPUStat.submissions, flushing / NSEC_PER_USEC / gGPUStat.submissions);
-		IOLog("RedwoodGPU: the GPU worked %llu us on each of %u (%u under 0.1 ms, %u under 0.25, %u under 0.5, "
+		IOLog("HakiosGPU: the GPU worked %llu us on each of %u (%u under 0.1 ms, %u under 0.25, %u under 0.5, "
 		    "%u under 1, %u under 2, %u under 4, %u longer; %llu ms in all)\n",
 		    timed ? worked / timed : 0, timed, by[0], by[1], by[2], by[3], by[4], by[5], by[6], worked / 1000);
-		IOLog("RedwoodGPU: %u waits of %llu us, %u over before they began; %u IOSurfaces taken as buffers in %llu us each; "
+		IOLog("HakiosGPU: %u waits of %llu us, %u over before they began; %u IOSurfaces taken as buffers in %llu us each; "
 		    "%u buffers, %llu MB\n",
 		    gGPUStat.waits, gGPUStat.waits ? waiting / NSEC_PER_USEC / gGPUStat.waits : 0, gGPUStat.over,
 		    gGPUStat.surfaces, gGPUStat.surfaces ? taking / NSEC_PER_USEC / gGPUStat.surfaces : 0, fBufferCount,
@@ -221,7 +221,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 
 		redwood_gpu_speed(&mhz, &changes);
 		if (mhz != 0) {
-			IOLog("RedwoodGPU: GPU at %u MHz, %u speed changes since it started\n", mhz, changes);
+			IOLog("HakiosGPU: GPU at %u MHz, %u speed changes since it started\n", mhz, changes);
 		}
 		if (gpu_va != 0) {
 			/*
@@ -235,7 +235,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 			unsigned holes, most;
 
 			redwood_gpu_space(&used, &live, &largest, &holes, &most, &lost, &refused);
-			IOLog("RedwoodGPU: addresses: %llu MB in %u buffers, longest run free %llu MB, %u holes "
+			IOLog("HakiosGPU: addresses: %llu MB in %u buffers, longest run free %llu MB, %u holes "
 			    "(%u at most, of 1024), %llu KB lost, %u allocations refused\n", used >> 20, live,
 			    largest >> 20, holes, most, lost >> 10, refused);
 		}

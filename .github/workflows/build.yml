@@ -51,7 +51,6 @@ jobs:
           rm -rf hackios/devices/dodge/.git
           cd hackios
           git apply --whitespace=nowarn devices/dodge/patches/kernel-common.patch
-          git apply --whitespace=nowarn devices/dodge/patches/kernel-common-inject.patch
           xnu/apply.sh     # the upstream's own XNU patch and files/, as they are
           # this port's kernel work on top: core changes and the driver registrations
           # (the A830 GPU bring-up conditions, the evolved mini-iokit, the adsp SCM revert)
